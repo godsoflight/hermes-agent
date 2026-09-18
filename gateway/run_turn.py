@@ -3215,12 +3215,15 @@ class GatewayTurnMixin:
             logger.debug("Could not set up streaming TTS consumer: %s", _stts_err)
 
     async def _run_agent_stream_consumer_task(self, stream_consumer_holder: list) -> None:
-        """Wait (up to 10s) for the stream consumer to be created inside run_sync, then run it."""
-        for _ in range(200):
-            if stream_consumer_holder[0] is not None:
-                await stream_consumer_holder[0].run()
-                return
+        """Wait for the stream consumer to be created inside run_sync, then run it.
+
+        Slow preflight work such as context compression can legitimately take longer than ten
+        seconds.  The owning turn cleanup cancels this task when no consumer is created, so a
+        fixed polling deadline only drops late interim commentary and provides no safety benefit.
+        """
+        while stream_consumer_holder[0] is None:
             await asyncio.sleep(0.05)
+        await stream_consumer_holder[0].run()
 
     @staticmethod
     async def _await_stream_task(stream_task) -> None:
