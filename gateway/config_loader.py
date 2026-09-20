@@ -289,6 +289,37 @@ def bridge_platform_shared_keys(
         extra.update(bridged)
 
 
+def bridge_qualified_channel_prompts(yaml_cfg: dict, platforms_data: dict) -> None:
+    """Partition durable platform-qualified route prompts into adapter prompt maps.
+
+    Both legacy top-level ``channel_prompts`` and ``session.channel_prompts`` use keys
+    such as ``telegram:-100123``, while adapters resolve by raw channel/thread id.
+    Session entries supersede legacy duplicates. A platform's explicit prompt map has
+    final precedence; qualified maps fill only routes without a platform-local prompt.
+    """
+    session_cfg = yaml_cfg.get("session")
+    session_prompts = session_cfg.get("channel_prompts") if isinstance(session_cfg, dict) else None
+    qualified_prompts: dict = {}
+    for source in (yaml_cfg.get("channel_prompts"), session_prompts):
+        if isinstance(source, dict):
+            qualified_prompts.update(source)
+    if not qualified_prompts:
+        return
+    for qualified_route, prompt in qualified_prompts.items():
+        platform_name, separator, route_id = str(qualified_route).partition(":")
+        route_id = route_id.strip()
+        if not separator or not route_id or not _is_platform_name(platform_name):
+            continue
+        canonical_platform_name = Platform(platform_name).value
+        platform_data = _dict_slot(platforms_data, canonical_platform_name)
+        extra = _dict_slot(platform_data, "extra")
+        platform_prompts = extra.get("channel_prompts")
+        if not isinstance(platform_prompts, dict):
+            platform_prompts = {}
+            extra["channel_prompts"] = platform_prompts
+        platform_prompts.setdefault(route_id, prompt)
+
+
 def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_data: dict, registry) -> None:
     """Plugin-owned YAML→env config bridges (``PlatformEntry.apply_yaml_config_fn``). Order: shared-key
     loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``."""
@@ -420,5 +451,6 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
 
     targets = shared_loop_targets(registry)
     bridge_platform_shared_keys(yaml_cfg, gateway_platforms, gw_data, platforms_data, targets)
+    bridge_qualified_channel_prompts(yaml_cfg, platforms_data)
     apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry)
     bridge_core_env_settings(yaml_cfg, platforms_data)

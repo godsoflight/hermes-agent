@@ -267,6 +267,60 @@ class TestGatewayConfigRoundtrip:
 
 class TestLoadGatewayConfig:
 
+    def test_session_channel_prompts_are_partitioned_by_platform(self, tmp_path, monkeypatch):
+        """Platform-qualified durable route prompts reach the adapter under the raw route id.
+
+        ``session.channel_prompts`` is shared by the channel-continuity inventory, while adapters
+        resolve ``config.extra['channel_prompts']`` using raw platform channel ids.  Explicit
+        per-platform prompts retain precedence over the shared map.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "session:\n"
+            "  channel_prompts:\n"
+            "    'telegram:-100': shared telegram prompt\n"
+            "    'discord:200': shared discord prompt\n"
+            "    malformed: ignored\n"
+            "channel_prompts:\n"
+            "  'slack:300': legacy qualified prompt\n"
+            "telegram:\n"
+            "  channel_prompts:\n"
+            "    '-100': explicit telegram prompt\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["channel_prompts"] == {
+            "-100": "explicit telegram prompt",
+        }
+        assert config.platforms[Platform.DISCORD].extra["channel_prompts"] == {
+            "200": "shared discord prompt",
+        }
+        assert config.platforms[Platform.SLACK].extra["channel_prompts"] == {
+            "300": "legacy qualified prompt",
+        }
+
+    def test_qualified_channel_prompt_platform_names_are_canonicalized(self, tmp_path, monkeypatch):
+        """Valid noncanonical platform spellings must not create unreachable parallel keys."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "session:\n"
+            "  channel_prompts:\n"
+            "    ' Telegram : -100 ': durable prompt\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["channel_prompts"] == {
+            "-100": "durable prompt",
+        }
+
 
     def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
