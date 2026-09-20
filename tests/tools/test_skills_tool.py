@@ -906,6 +906,25 @@ class TestSkillViewCollisionDetection:
             ),
         )
 
+    def test_identical_local_copies_across_categories_resolve_to_first(self, tmp_path):
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        content = (
+            "---\nname: shared-copy\ndescription: Same bytes\n---\n"
+            "# Shared copy\n\nIDENTICAL BODY\n"
+        )
+        for category in ("z-last", "a-first"):
+            skill_dir = local_dir / category / "shared-copy"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            result = json.loads(skill_view("shared-copy"))
+
+        assert result["success"] is True
+        assert result["path"] == "a-first/shared-copy/SKILL.md"
+
     def test_nested_local_collides_with_top_level_external(self, tmp_path):
         """The original bug scenario: nested local + top-level external,
         same name. Now refuses with both paths surfaced."""

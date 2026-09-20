@@ -85,6 +85,38 @@ class TestClassification:
         for name in BRIDGE_TOOL_NAMES:
             assert not is_deferrable_tool_name(name)
 
+    def test_tts_defers_by_default_but_skill_manage_stays_direct(self):
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import (
+            _DEFAULT_DEFERRED_TOOLS,
+            ToolSearchConfig,
+            assemble_tool_defs,
+            dispatch_tool_describe,
+            dispatch_tool_search,
+        )
+
+        assert "text_to_speech" in _DEFAULT_DEFERRED_TOOLS
+        assert "skill_manage" not in _DEFAULT_DEFERRED_TOOLS
+        discover_builtin_tools()
+        supplied = [
+            _td("text_to_speech", "Convert text to spoken audio", {"text": {"type": "string"}}),
+            _td("skill_manage", "Create and update skills"),
+        ]
+        cfg = ToolSearchConfig.from_raw({"enabled": "on"})
+        assembled = assemble_tool_defs(supplied, context_length=200_000, config=cfg)
+        direct_names = {td["function"]["name"] for td in assembled.tool_defs}
+        assert "text_to_speech" not in direct_names
+        assert "skill_manage" in direct_names
+
+        found = json.loads(dispatch_tool_search(
+            {"queries": ["convert text to speech audio"]}, current_tool_defs=supplied, config=cfg
+        ))
+        assert "text_to_speech" in json.dumps(found)
+        described = json.loads(dispatch_tool_describe(
+            {"names": ["text_to_speech"]}, current_tool_defs=supplied, config=cfg
+        ))
+        assert "text_to_speech" in json.dumps(described)
+
     def test_gui_surface_tools_never_defer(self):
         """Session-gated GUI tools stay direct and stay off the global core list."""
         from tools.registry import discover_builtin_tools

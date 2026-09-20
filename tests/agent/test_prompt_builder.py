@@ -349,6 +349,43 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_globally_deduplicates_byte_identical_personal_skills_by_frontmatter_name(
+        self, monkeypatch, tmp_path
+    ):
+        """Identical copies in different categories cost one index line; the
+        first discovered copy determines where that line stays."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        content = "---\nname: shared-skill\ndescription: Shared description\n---\n# Shared\n"
+        # Create in reverse order to prove filesystem creation order is irrelevant.
+        for category in ("z-last", "a-first"):
+            skill_dir = tmp_path / "skills" / category / f"{category}-directory"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+        result = build_skills_system_prompt()
+
+        assert result.count("    - shared-skill: Shared description") == 1
+        assert result.index("  a-first:") < result.index("    - shared-skill")
+        assert "  z-last:" not in result
+
+    def test_retains_and_surfaces_divergent_personal_same_name_collisions(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for category, body in (("alpha", "ALPHA"), ("beta", "BETA")):
+            skill_dir = tmp_path / "skills" / category / f"{category}-directory"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: colliding-skill\ndescription: {body}\n---\n# {body}\n",
+                encoding="utf-8",
+            )
+
+        result = build_skills_system_prompt()
+
+        assert result.count("    - colliding-skill:") == 2
+        assert result.count("name collision") == 2
+        assert "ALPHA" in result and "BETA" in result
+
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path

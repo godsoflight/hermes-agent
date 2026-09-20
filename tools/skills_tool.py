@@ -519,12 +519,15 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         roots = {_owning_search_dir(smd, all_dirs) for _sd, smd in candidates}
         if len(roots) == 1 and None not in roots and _provably_same_skill(candidates):
             root = roots.pop()
-            ranked = sorted(candidates, key=lambda c: _rank_same_root_candidate(c, root))
-            if _rank_same_root_candidate(ranked[0], root) != _rank_same_root_candidate(ranked[1], root):
-                logger.info("Skill '%s': %d identical same-root copies, resolved to %s (duplicates: %s)",
-                            name, len(candidates), ranked[0][1],
-                            "; ".join(str(smd) for _sd, smd in ranked[1:]))
-                candidates = [ranked[0]]
+            assert root is not None
+            ranked = sorted(
+                candidates,
+                key=lambda c: (*_rank_same_root_candidate(c, root), str(c[1].relative_to(root))),
+            )
+            logger.info("Skill '%s': %d identical same-root copies, resolved to %s (duplicates: %s)",
+                        name, len(candidates), ranked[0][1],
+                        "; ".join(str(smd) for _sd, smd in ranked[1:]))
+            candidates = [ranked[0]]
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))

@@ -5,6 +5,7 @@ with memory and ephemeral prompts.
 """
 
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -1116,7 +1117,7 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+_SKILLS_SNAPSHOT_VERSION = 3
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1192,6 +1193,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "content_sha256": hashlib.sha256(skill_file.read_bytes()).hexdigest(),
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1316,6 +1318,31 @@ def _collect_extra_skills(
             logger.debug(log_fmt, skill_file, e)
 
 
+def _dedupe_identical_personal_entries(visible_entries: list[dict]) -> list[dict]:
+    """Drop only byte-identical personal same-name copies, keeping first order.
+
+    Divergent copies stay and are tagged for fail-loud rendering. Org entries
+    are intentionally outside this policy; personal/org collision handling is
+    separate and unchanged.
+    """
+    copies_by_name: dict[str, list[dict]] = {}
+    for entry in visible_entries:
+        if not entry.get("org_id"):
+            copies_by_name.setdefault(_entry_name(entry), []).append(entry)
+
+    skip_ids: set[int] = set()
+    for copies in copies_by_name.values():
+        if len(copies) < 2:
+            continue
+        digests = {entry.get("content_sha256") for entry in copies}
+        if len(digests) == 1 and None not in digests:
+            skip_ids.update(id(entry) for entry in copies[1:])
+        else:
+            for entry in copies:
+                entry["personal_name_collision"] = True
+    return [entry for entry in visible_entries if id(entry) not in skip_ids]
+
+
 def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]]) -> None:
     """Org labeling + FAIL-LOUD collisions: a personal/org name clash flags BOTH
     entries (neither silently wins) and skill_view refuses the bare name."""
@@ -1330,6 +1357,8 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
         category = f"org:{org_id}" if org_id else (entry.get("category") or "general")
         if len(name_owners[fm]) > 1:
             desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load via category path] {desc}".strip()
+        elif entry.get("personal_name_collision"):
+            desc = f"[name collision — divergent personal copies; load via category path] {desc}".strip()
         skills_by_category.setdefault(category, []).append((fm, desc))
 
 
@@ -1451,7 +1480,8 @@ def _build_skills_system_prompt_inner(
             _collect_extra_skills(proj_dir, iter_project_skill_files(proj_dir), hides, project_names, skills_by_category,
                                   desc_prefix="[project] ", log_fmt="Error reading project skill %s: %s")
     # Drop shadowed entries BEFORE org labeling so collision flags don't fire on intentional overrides.
-    _label_visible_entries([e for e in visible_entries if _entry_name(e) not in project_names], skills_by_category)
+    local_entries = [e for e in visible_entries if _entry_name(e) not in project_names]
+    _label_visible_entries(_dedupe_identical_personal_entries(local_entries), skills_by_category)
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:
