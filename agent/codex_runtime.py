@@ -1052,6 +1052,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # wrapper around this callback already keeps a retired worker from overwriting a newer request.
         if getattr(agent, "_last_api_first_chunk_at", None) is None:
             agent._last_api_first_chunk_at = now
+            agent._last_api_first_event_monotonic = time.monotonic()
         has_progress = _codex_event_has_content(event)
         if watchdog_state is not None:
             with watchdog_state.lock:

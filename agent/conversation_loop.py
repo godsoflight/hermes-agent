@@ -1355,6 +1355,7 @@ class _LoopState:
     total_chars: Any = None
     thinking_spinner: Any = None
     api_start_time: Any = None
+    api_start_monotonic: Any = None
     retry_count: int = 0
     max_retries: Any = None
     _retry: Any = None
@@ -1546,7 +1547,8 @@ def _run_conversation_turn(
             continue
         _run_phase(announce_api_call, agent, s)
 
-        s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
+        s.api_start_time, s.api_start_monotonic = time.time(), time.monotonic()
+        s.retry_count, s.max_retries = 0, agent._api_max_retries
         s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
         s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
 

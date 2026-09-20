@@ -210,6 +210,9 @@ class TestPostApiRequestFirstChunkAtPayload:
         assert isinstance(stamped, float)
         # TTFB must be derivable and sane: started_at <= first_chunk_at <= ended_at.
         assert post[0]["started_at"] <= stamped <= post[0]["ended_at"]
+        assert post[0]["first_event_at"] == stamped
+        assert isinstance(post[0]["ttft_s"], float)
+        assert 0 <= post[0]["ttft_s"] <= post[0]["api_duration"]
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

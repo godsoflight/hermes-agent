@@ -2805,6 +2805,7 @@ class _StreamingCall(StreamingWaitMonitor):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
             if diag.get("first_chunk_at") is None:
                 diag["first_chunk_at"] = self.last_chunk_time["t"]
+                diag["first_chunk_monotonic"] = time.monotonic()
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
 
@@ -3688,6 +3689,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # Propagate first-chunk timing for the ``post_api_request`` hook.
         if isinstance(self.clients.diag, dict) and self.clients.diag.get("first_chunk_at"):
             self.agent._last_api_first_chunk_at = float(self.clients.diag["first_chunk_at"])
+            self.agent._last_api_first_event_monotonic = self.clients.diag.get("first_chunk_monotonic")
         return self.result["response"]
 
 

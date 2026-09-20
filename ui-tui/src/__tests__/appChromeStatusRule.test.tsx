@@ -529,6 +529,8 @@ describe('StatusRule idle-since read-out', () => {
 describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
   const perfUsage = {
     ...baseProps.usage,
+    api_duration_p50_s: 2.5,
+    api_duration_p95_s: 17.4,
     avg_latency_s: 3.2,
     avg_tps: 50.4,
     cache_hit_pct: 87,
@@ -542,7 +544,7 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     const rendered = textContent(element)
 
     expect(rendered).toContain('◎ 87%')
-    expect(rendered).toContain('◷ 3.2s')
+    expect(rendered).toContain('◷ 2.5/17.4s p50/p95')
     expect(rendered).toContain('↑ 50 t/s')
   })
 

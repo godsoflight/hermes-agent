@@ -1941,6 +1941,8 @@ def _get_usage(agent) -> dict:
         "reasoning": g("session_reasoning_tokens"), "prompt": g("session_prompt_tokens"),
         "completion": g("session_completion_tokens"), "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
+        "cache_read": g("session_cache_read_tokens"),
+        "cache_write": g("session_cache_write_tokens"),
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
@@ -1967,6 +1969,24 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
+        # Linear-interpolated percentiles over the same bounded local histories. Keep the
+        # legacy averages above for compatible clients while exposing tail latency explicitly.
+        def _percentile(values, fraction):
+            ordered = sorted(float(value) for value in values if value == value and 0 <= value < 1e6)
+            if not ordered:
+                return None
+            position = (len(ordered) - 1) * fraction
+            lower = int(position)
+            upper = min(lower + 1, len(ordered) - 1)
+            return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+        for _prefix, _history in (
+            ("api_duration", _lhist),
+            ("ttft", list(getattr(agent, "_api_ttft_history", []) or [])),
+        ):
+            for _suffix, _fraction in (("p50_s", 0.50), ("p95_s", 0.95)):
+                if (_value := _percentile(_history, _fraction)) is not None:
+                    usage[f"{_prefix}_{_suffix}"] = round(_value, 1)
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count

@@ -95,7 +95,7 @@ def check_api_response(
     finish_reason: Any, retry_count: Any, max_retries: Any, compression_attempts: Any,
     max_compression_attempts: Any, length_continue_retries: Any, truncated_response_parts: Any,
     truncated_tool_call_retries: Any, current_turn_user_idx: Any, api_call_count: Any,
-    api_request_id: Any, api_start_time: Any, effective_task_id: Any, turn_id: Any,
+    api_request_id: Any, api_start_time: Any, api_start_monotonic: Any, effective_task_id: Any, turn_id: Any,
     _preflight_compression_blocked: Any, _last_preflight_pressure: Any,
 ) -> ResponseCheckVerdict:
     """Verify ``response`` in the original order. The retry buffer is NOT cleared on success
@@ -116,7 +116,9 @@ def check_api_response(
             result=result,
         )
 
-    api_duration = time.time() - api_start_time
+    # Wall time remains in lifecycle payload timestamps, but elapsed metrics use a monotonic
+    # clock so NTP / manual clock changes cannot create negative or inflated durations.
+    api_duration = time.monotonic() - api_start_monotonic
 
     # Silent stop: the response box / tool messages that follow are more informative.
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
@@ -194,6 +196,10 @@ def check_api_response(
         agent, response, messages=messages, api_call_count=api_call_count,
         api_duration=api_duration, compression_attempts=compression_attempts,
         max_compression_attempts=max_compression_attempts,
+        api_ttft=(
+            float(agent._last_api_first_event_monotonic) - float(api_start_monotonic)
+            if getattr(agent, "_last_api_first_event_monotonic", None) is not None else None
+        ),
     )
     compression_attempts = _usage_outcome.compression_attempts
     if _usage_outcome.rearmed:

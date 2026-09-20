@@ -57,7 +57,7 @@ def _coerce_content_text(raw: Any) -> str:
 
 def _fire_post_api_request_hook(
     agent: Any, response: Any, assistant_message: Any, finish_reason: Any, *, api_messages: Any,
-    api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
+    api_call_count: Any, api_duration: Any, api_start_time: Any, api_start_monotonic: Any, api_request_id: Any,
     effective_task_id: Any, turn_id: Any,
 ) -> None:
     from agent.conversation_loop import _moa_reference_metrics_for_hook
@@ -65,6 +65,11 @@ def _fire_post_api_request_hook(
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("post_api_request"):
+            first_event_at = getattr(agent, "_last_api_first_chunk_at", None)
+            first_event_monotonic = getattr(agent, "_last_api_first_event_monotonic", None)
+            ttft_s = None
+            if first_event_monotonic is not None:
+                ttft_s = max(0.0, float(first_event_monotonic) - float(api_start_monotonic))
             _invoke_hook(
                 "post_api_request",
                 task_id=effective_task_id,
@@ -82,7 +87,10 @@ def _fire_post_api_request_hook(
                 ended_at=api_start_time + api_duration,
                 # First stream chunk time (epoch s); None if not streamed / no chunk.
                 # TTFB = first_chunk_at - started_at.
-                first_chunk_at=getattr(agent, "_last_api_first_chunk_at", None),
+                first_chunk_at=first_event_at,
+                # Provider-neutral aliases/elapsed value: lifecycle frames can be accepted before text.
+                first_event_at=first_event_at,
+                ttft_s=ttft_s,
                 finish_reason=finish_reason,
                 message_count=len(api_messages),
                 response_model=getattr(response, "model", None),
@@ -118,7 +126,7 @@ def _relay_thinking(agent: Any, content: str) -> None:
 
 def normalize_model_response(
     agent: Any, *, response: Any, messages: Any, api_messages: Any, conversation_history: Any,
-    api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
+    api_call_count: Any, api_duration: Any, api_start_time: Any, api_start_monotonic: Any, api_request_id: Any,
     effective_task_id: Any, turn_id: Any, active_system_prompt: Any = None,
 ) -> ResponseIntakeVerdict:
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
@@ -142,6 +150,7 @@ def normalize_model_response(
     _fire_post_api_request_hook(
         agent, response, assistant_message, finish_reason, api_messages=api_messages,
         api_call_count=api_call_count, api_duration=api_duration, api_start_time=api_start_time,
+        api_start_monotonic=api_start_monotonic,
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
     )
 

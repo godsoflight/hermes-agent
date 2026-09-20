@@ -73,6 +73,7 @@ def _fold_moa_usage(agent, canonical_usage):
 def record_response_usage(
     agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
+    api_ttft: float | None = None,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
     and the API-call log line (see module docstring). No-usage responses only
@@ -186,6 +187,10 @@ def record_response_usage(
         ohist = getattr(agent, "_api_output_history", None)
         if ohist is not None:
             ohist.append(int(canonical_usage.output_tokens or 0))
+    if api_ttft is not None and api_ttft >= 0:
+        ttft_hist = getattr(agent, "_api_ttft_history", None)
+        if ttft_hist is not None:
+            ttft_hist.append(float(api_ttft))
 
     _cache_pct = ""
     if canonical_usage.cache_read_tokens and prompt_tokens:

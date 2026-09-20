@@ -242,6 +242,8 @@ export interface SessionUndoResponse {
 
 export interface SessionUsageResponse {
   active_subagents?: number
+  api_duration_p50_s?: number
+  api_duration_p95_s?: number
   avg_latency_s?: number
   avg_tps?: number
   cache_hit_pct?: number
@@ -261,6 +263,8 @@ export interface SessionUsageResponse {
   model?: string
   output?: number
   total?: number
+  ttft_p50_s?: number
+  ttft_p95_s?: number
   // Shared dollar usage model (two-bar view) so /usage renders the same bars
   // as /subscription. Dollars only — never "credits".
   usage?: UsageModelData

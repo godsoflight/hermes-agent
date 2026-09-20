@@ -2204,8 +2204,9 @@ _USAGE_STATE: Dict[str, Any] = {
     "session_estimated_cost_usd": 0.0,
     "session_cost_status": "unknown",
     "session_cost_source": "none",
-    # Status-bar latency/velocity history (last 10 calls), shared by loop + codex_runtime.
+    # Local rolling performance histories (last 10 completed main-model calls).
     "_api_latency_history": lambda: deque(maxlen=10),
+    "_api_ttft_history": lambda: deque(maxlen=10),
     "_api_output_history": lambda: deque(maxlen=10),
 }
 

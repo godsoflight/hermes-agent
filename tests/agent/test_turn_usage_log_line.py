@@ -52,6 +52,23 @@ def test_fields_are_omitted_when_absent(tmp_path, monkeypatch, caplog):
     assert "write=" not in line and "id=" not in line and "upstream=" not in line
 
 
+def test_usage_records_bounded_completed_duration_and_ttft_histories(tmp_path, monkeypatch, caplog):
+    a = _agent(tmp_path, monkeypatch)
+    try:
+        resp = SimpleNamespace(usage=_usage(2, 3, 10), id=None, model=a.model)
+        from agent import turn_usage
+        turn_usage.record_response_usage(
+            a, resp, messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+            api_duration=2.5, api_ttft=0.4, compression_attempts=0, max_compression_attempts=3,
+        )
+        assert list(a._api_latency_history) == [2.5]
+        assert list(a._api_ttft_history) == [0.4]
+        assert a._api_latency_history.maxlen == 10
+        assert a._api_ttft_history.maxlen == 10
+    finally:
+        a.close()
+
+
 def test_forensics_parser_reads_the_new_fields(tmp_path):
     from evals.postmortem.forensics.logcalls import parse_logs
     log = tmp_path / "agent.log"

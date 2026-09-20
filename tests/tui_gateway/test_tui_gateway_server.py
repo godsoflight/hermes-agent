@@ -20296,20 +20296,28 @@ class _BareAgent:
 
 
 def test_get_usage_perf_readouts_present():
-    """cache_hit_pct / avg_latency_s / avg_tps mirror the classic CLI bar."""
+    """Usage exposes raw cache buckets and rolling latency/TTFT percentiles."""
     from collections import deque
 
     class _PerfAgent:
         model = "x"
         session_prompt_tokens = 27_873
         session_cache_read_tokens = 24_369
-        _api_latency_history = deque([2.1, 4.3], maxlen=10)
-        _api_output_history = deque([130, 190], maxlen=10)
+        session_cache_write_tokens = 3_504
+        _api_latency_history = deque([1.0, 2.0, 3.0, 20.0], maxlen=10)
+        _api_ttft_history = deque([0.1, 0.2, 0.3, 1.0], maxlen=10)
+        _api_output_history = deque([50, 50, 50, 50], maxlen=10)
 
     usage = server._get_usage(_PerfAgent())
     assert usage["cache_hit_pct"] == 87
-    assert usage["avg_latency_s"] == 3.2
-    assert usage["avg_tps"] == 50.0  # true throughput sum(out)/sum(lat), not mean of ratios
+    assert usage["cache_read"] == 24_369
+    assert usage["cache_write"] == 3_504
+    assert usage["avg_latency_s"] == 6.5
+    assert usage["avg_tps"] == 7.7  # true throughput sum(out)/sum(lat), not mean of ratios
+    assert usage["api_duration_p50_s"] == 2.5
+    assert usage["api_duration_p95_s"] == 17.4
+    assert usage["ttft_p50_s"] == 0.2
+    assert usage["ttft_p95_s"] == 0.9
 
 
 def test_get_usage_perf_readouts_omitted_without_data():
@@ -20322,8 +20330,14 @@ def test_get_usage_perf_readouts_omitted_without_data():
 
     usage = server._get_usage(_ColdAgent())
     assert "cache_hit_pct" not in usage
+    assert usage["cache_read"] == 0
+    assert usage["cache_write"] == 0
     assert "avg_latency_s" not in usage
     assert "avg_tps" not in usage
+    assert "api_duration_p50_s" not in usage
+    assert "api_duration_p95_s" not in usage
+    assert "ttft_p50_s" not in usage
+    assert "ttft_p95_s" not in usage
 
 
 def test_get_usage_perf_readouts_guard_negative_latency():

@@ -634,7 +634,9 @@ export function StatusRule({
   // cache reads, Codex app-server with no latency), so these self-hide.
   const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `◎ ${usage.cache_hit_pct}%` : ''
   const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
-  const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
+  const latencyText = typeof usage.api_duration_p50_s === 'number' && typeof usage.api_duration_p95_s === 'number'
+    ? `◷ ${usage.api_duration_p50_s.toFixed(1)}/${usage.api_duration_p95_s.toFixed(1)}s p50/p95`
+    : typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
   const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
   const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
   const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
