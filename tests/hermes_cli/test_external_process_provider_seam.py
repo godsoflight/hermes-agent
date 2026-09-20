@@ -26,8 +26,7 @@ class _AcmeACPProfile(ProviderProfile):
         return None
 
 
-register_provider(
-    _AcmeACPProfile(
+ACME_PROFILE = _AcmeACPProfile(
         name="acme-acp",
         aliases=("acme",),
         display_name="Acme ACP",
@@ -38,7 +37,7 @@ register_provider(
         process_command_env_vars=("ACME_CLI_PATH",),
         process_args_env_var="ACME_ACP_ARGS",
     )
-)
+register_provider(ACME_PROFILE)
 
 
 @pytest.fixture
@@ -54,6 +53,12 @@ def fake_cli(tmp_path, monkeypatch):
 
 
 def test_an_out_of_tree_external_process_provider_resolves_end_to_end(fake_cli, monkeypatch):
+    # Pytest imports every selected module before running tests. If another selected
+    # module imported hermes_cli.auth first, replay the same startup registration
+    # hook so this test remains independent of collection order.
+    from hermes_cli import auth as auth_mod
+    if "acme-acp" not in auth_mod.PROVIDER_REGISTRY:
+        auth_mod._register_plugin_provider(ACME_PROFILE)
     from hermes_cli.auth import PROVIDER_REGISTRY, resolve_external_process_provider_credentials, resolve_provider
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -84,3 +89,24 @@ def test_copilot_acp_launch_details_are_unchanged(fake_cli, monkeypatch):
     monkeypatch.setenv("COPILOT_CLI_PATH", str(fake_cli / "custom-acme"))
     assert resolve_external_process_provider_credentials("copilot-acp")["command"] == str(fake_cli / "custom-acme")
     assert resolve_runtime_provider(requested="copilot-acp", target_model="x")["base_url"] == "acp://copilot"
+
+
+def test_copilot_acp_launch_details_follow_active_multiplex_profile_scope(fake_cli, monkeypatch):
+    from agent.secret_scope import is_multiplex_active, reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_cli.auth import resolve_external_process_provider_credentials
+
+    monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", str(fake_cli / "copilot"))
+    token = set_secret_scope({
+        "HERMES_COPILOT_ACP_COMMAND": str(fake_cli / "custom-acme"),
+        "HERMES_COPILOT_ACP_ARGS": "acp",
+    })
+    previous_multiplex_state = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        creds = resolve_external_process_provider_credentials("copilot-acp")
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(previous_multiplex_state)
+
+    assert creds["command"] == str(fake_cli / "custom-acme")
+    assert creds["args"] == ["acp"]

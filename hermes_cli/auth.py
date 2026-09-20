@@ -1842,9 +1842,10 @@ def _external_process_spec(
         profile = None
     command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
     args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
-    command = (next((v for v in (os.getenv(var, "").strip() for var in command_env_vars) if v), "")
+    from agent.secret_scope import get_secret_str
+    command = (next((v for v in (get_secret_str(var).strip() for var in command_env_vars) if v), "")
                or str(getattr(profile, "process_command", "") or ""))
-    raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
+    raw_args = get_secret_str(args_env_var).strip() if args_env_var else ""
     args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
     return command, args, base_url, shutil.which(command) if command else None, command_env_vars
 

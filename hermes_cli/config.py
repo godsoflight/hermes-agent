@@ -3964,11 +3964,45 @@ def _cmd_config_migrate(args):
     print()
 
 
+def _parse_telegram_chat_ids(value: object) -> set[str]:
+    """Normalize Telegram chat-id config exactly like the runtime gate."""
+    from gateway.platforms._shared import decode_json_list_literal
+
+    decoded = decode_json_list_literal(value)
+    if isinstance(decoded, list):
+        raw: list[Any] = decoded
+    elif decoded is None:
+        raw = []
+    else:
+        raw = str(decoded).split(",")
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
+def _telegram_response_gate_issues(config: dict) -> list[str]:
+    """Return deterministic Telegram response-gate contradictions."""
+    telegram = (((config.get("gateway") or {}).get("platforms") or {}).get("telegram") or {})
+    extra = telegram.get("extra") or {}
+    allowed = _parse_telegram_chat_ids(extra.get("allowed_chats"))
+    if not allowed:
+        return []
+    free_response = _parse_telegram_chat_ids(extra.get("free_response_chats"))
+    blocked = sorted(free_response - allowed)
+    if not blocked:
+        return []
+    return [f"Telegram free-response chats blocked by allowed_chats: {', '.join(blocked)}"]
+
+
 def _cmd_config_check(args):
     """Non-interactive report of what's missing."""
     _print_banner("📋 Configuration Status")
 
     current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
+    config = load_config()
+    gate_issues = _telegram_response_gate_issues(config)
+    if gate_issues:
+        for issue in gate_issues:
+            print(color(f"  ✗ {issue}", Colors.RED))
+        raise SystemExit(1)
     if current_ver >= latest_ver:
         print(f"  Config version: {current_ver} ✓")
     else:

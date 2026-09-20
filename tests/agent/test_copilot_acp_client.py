@@ -11,12 +11,43 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.copilot_acp_client import CopilotACPClient
+from agent.copilot_acp_client import CopilotACPClient, _resolve_args, _resolve_command
+
+
+def test_default_cwd_uses_scope_aware_agent_workspace(tmp_path):
+    """Gateway profile scope, not the long-lived process cwd, owns ACP workspace selection."""
+    with patch("agent.runtime_cwd.resolve_agent_cwd", return_value=tmp_path):
+        client = CopilotACPClient()
+
+    assert client._acp_cwd == str(tmp_path.resolve())
 
 
 class _FakeProcess:
     def __init__(self) -> None:
         self.stdin = io.StringIO()
+
+
+def test_acp_launch_settings_honor_routed_profile_scope(monkeypatch, tmp_path):
+    """A multiplexed profile's .env must select its own ACP executable and arguments."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+
+    profile_home = tmp_path / "profiles" / "kimi-telegram"
+    profile_home.mkdir(parents=True)
+    (profile_home / ".env").write_text(
+        "HERMES_COPILOT_ACP_COMMAND=/opt/kimi/bin/kimi\n"
+        "HERMES_COPILOT_ACP_ARGS=acp\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("HERMES_COPILOT_ACP_COMMAND", raising=False)
+    monkeypatch.delenv("COPILOT_CLI_PATH", raising=False)
+    monkeypatch.delenv("HERMES_COPILOT_ACP_ARGS", raising=False)
+
+    token = set_secret_scope(build_profile_secret_scope(profile_home))
+    try:
+        assert _resolve_command() == "/opt/kimi/bin/kimi"
+        assert _resolve_args() == ["acp"]
+    finally:
+        reset_secret_scope(token)
 
 
 class CopilotACPClientSafetyTests(unittest.TestCase):
@@ -70,7 +101,156 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertTrue(payload)
         return json.loads(payload)
 
+    @staticmethod
+    def _bash_permission(command: str, *, request_id: int = 21) -> dict:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "session/request_permission",
+            "params": {
+                "options": [
+                    {"kind": "allow_once", "name": "Approve once", "optionId": "approve_once"},
+                    {"kind": "allow_always", "name": "Approve for this session", "optionId": "approve_always"},
+                    {"kind": "reject_once", "name": "Reject", "optionId": "reject"},
+                ],
+                "toolCall": {
+                    "title": "Bash",
+                    "content": [{
+                        "type": "content",
+                        "content": {"type": "text", "text": f"Requesting approval to Running: {command}"},
+                    }],
+                },
+            },
+        }
 
+    def test_bash_permission_uses_hermes_guard_and_selects_allow_once(self) -> None:
+        with patch(
+            "tools.approval.check_all_command_guards",
+            return_value={"approved": True, "message": None},
+        ) as guard:
+            response = self._dispatch(self._bash_permission("pwd"), cwd="/tmp")
+
+        guard.assert_called_once_with("pwd", "local", has_host_access=True)
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "selected", "optionId": "approve_once"},
+        )
+
+    def test_bash_permission_rejection_selects_reject_option(self) -> None:
+        with patch(
+            "tools.approval.check_all_command_guards",
+            return_value={"approved": False, "message": "denied"},
+        ):
+            response = self._dispatch(self._bash_permission("rm -rf /"), cwd="/tmp")
+
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "selected", "optionId": "reject"},
+        )
+
+    def test_unparseable_permission_fails_closed(self) -> None:
+        response = self._dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 22,
+                "method": "session/request_permission",
+                "params": {
+                    "options": [{"kind": "allow_once", "optionId": "allow"}],
+                    "toolCall": {"title": "Unknown", "content": []},
+                },
+            },
+            cwd="/tmp",
+        )
+
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_bash_permission_preserves_exact_command_whitespace(self) -> None:
+        command = "printf 'x'  \n"
+        with patch(
+            "tools.approval.check_all_command_guards",
+            return_value={"approved": True, "message": None},
+        ) as guard:
+            response = self._dispatch(self._bash_permission(command), cwd="/tmp")
+
+        guard.assert_called_once_with(command, "local", has_host_access=True)
+        self.assertEqual(response["result"]["outcome"]["optionId"], "approve_once")
+
+    def test_duplicate_bash_command_blocks_fail_closed_without_policy_call(self) -> None:
+        message = self._bash_permission("pwd")
+        message["params"]["toolCall"]["content"].append({
+            "type": "content",
+            "content": {"type": "text", "text": "Requesting approval to Running: whoami"},
+        })
+        with patch("tools.approval.check_all_command_guards") as guard:
+            response = self._dispatch(message, cwd="/tmp")
+
+        guard.assert_not_called()
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_malformed_permission_shapes_fail_closed(self) -> None:
+        malformed_params = ["oops", [], {"toolCall": "oops", "options": []}, {
+            "toolCall": {"title": "Bash", "content": "oops"}, "options": []
+        }]
+        for index, params in enumerate(malformed_params, start=30):
+            with self.subTest(params=params):
+                response = self._dispatch({
+                    "jsonrpc": "2.0", "id": index,
+                    "method": "session/request_permission", "params": params,
+                }, cwd="/tmp")
+                self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_permission_option_id_must_be_string_and_is_not_normalized(self) -> None:
+        numeric = self._bash_permission("pwd")
+        numeric["params"]["options"][0]["optionId"] = 7
+        with patch("tools.approval.check_all_command_guards", return_value={"approved": True}):
+            numeric_response = self._dispatch(numeric, cwd="/tmp")
+        self.assertEqual(numeric_response["result"]["outcome"], {"outcome": "cancelled"})
+
+        spaced = self._bash_permission("pwd")
+        spaced["params"]["options"][0]["optionId"] = " allow-id "
+        with patch("tools.approval.check_all_command_guards", return_value={"approved": True}):
+            spaced_response = self._dispatch(spaced, cwd="/tmp")
+        self.assertEqual(spaced_response["result"]["outcome"]["optionId"], " allow-id ")
+
+    def test_permission_policy_exception_fails_closed(self) -> None:
+        with patch("tools.approval.check_all_command_guards", side_effect=RuntimeError("boom")):
+            response = self._dispatch(self._bash_permission("pwd"), cwd="/tmp")
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_malformed_sibling_command_block_fails_closed(self) -> None:
+        message = self._bash_permission("pwd")
+        message["params"]["toolCall"]["content"].append("malformed-block")
+        with patch("tools.approval.check_all_command_guards") as guard:
+            response = self._dispatch(message, cwd="/tmp")
+        guard.assert_not_called()
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_malformed_sibling_permission_option_fails_closed(self) -> None:
+        message = self._bash_permission("pwd")
+        message["params"]["options"].append("malformed-option")
+        with patch("tools.approval.check_all_command_guards", return_value={"approved": True}):
+            response = self._dispatch(message, cwd="/tmp")
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_non_boolean_guard_verdict_fails_closed(self) -> None:
+        with patch("tools.approval.check_all_command_guards", return_value={"approved": "false"}):
+            response = self._dispatch(self._bash_permission("pwd"), cwd="/tmp")
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_non_text_permission_content_fails_closed_without_policy_call(self) -> None:
+        message = self._bash_permission("pwd")
+        message["params"]["toolCall"]["content"][0]["content"]["type"] = "image"
+        with patch("tools.approval.check_all_command_guards") as guard:
+            response = self._dispatch(message, cwd="/tmp")
+        guard.assert_not_called()
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_duplicate_permission_option_ids_fail_closed(self) -> None:
+        message = self._bash_permission("pwd")
+        message["params"]["options"][2]["optionId"] = "approve_once"
+        with patch("tools.approval.check_all_command_guards", return_value={"approved": True}):
+            response = self._dispatch(message, cwd="/tmp")
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
 
     def test_read_text_file_redacts_sensitive_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -73,11 +73,107 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
 
 
 def _resolve_command() -> str:
-    return os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip() or os.getenv("COPILOT_CLI_PATH", "").strip() or "copilot"
+    from agent.secret_scope import get_secret
+
+    return (get_secret("HERMES_COPILOT_ACP_COMMAND", "") or "").strip() \
+        or (get_secret("COPILOT_CLI_PATH", "") or "").strip() or "copilot"
 
 
 def _resolve_args() -> list[str]:
-    return shlex.split(os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()) or ["--acp", "--stdio"]
+    from agent.secret_scope import get_secret
+
+    return shlex.split((get_secret("HERMES_COPILOT_ACP_ARGS", "") or "").strip()) or ["--acp", "--stdio"]
+
+
+def _acp_permission_option(params: dict[str, Any], *, allow: bool) -> str | None:
+    """Return the one unambiguous server-provided option id without normalizing it."""
+    if not isinstance(params, dict):
+        return None
+    wanted = ("allow_once",) if allow else ("reject_once", "reject_always")
+    options = params.get("options")
+    if not isinstance(options, list):
+        return None
+    if any(
+        not isinstance(option, dict)
+        or not isinstance(option.get("kind"), str)
+        or not isinstance(option.get("optionId"), str)
+        or not option["optionId"].strip()
+        for option in options
+    ):
+        return None
+    option_ids = [option["optionId"] for option in options]
+    if len(option_ids) != len(set(option_ids)):
+        return None
+    for kind in wanted:
+        matches: list[str] = []
+        for option in options:
+            if not isinstance(option, dict) or option.get("kind") != kind:
+                continue
+            option_id = option.get("optionId")
+            if isinstance(option_id, str) and option_id.strip():
+                matches.append(option_id)
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            return None
+    return None
+
+
+def _acp_bash_permission_command(params: dict[str, Any]) -> str | None:
+    """Extract exactly one Kimi ACP Bash command without changing its bytes.
+
+    ACP v1 does not require structured command input on permission requests. Kimi
+    currently supplies the exact command in a text block prefixed with
+    ``Requesting approval to Running: ``. Match that shape strictly; an unknown,
+    malformed, or ambiguous payload must fail closed rather than silently bypass
+    Hermes policy.
+    """
+    if not isinstance(params, dict):
+        return None
+    tool_call = params.get("toolCall")
+    if not isinstance(tool_call, dict):
+        return None
+    if str(tool_call.get("title") or "").strip().lower() != "bash":
+        return None
+    blocks = tool_call.get("content")
+    if not isinstance(blocks, list):
+        return None
+    prefix = "Requesting approval to Running: "
+    matches: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "content":
+            return None
+        content = block.get("content")
+        if not isinstance(content, dict) or content.get("type") != "text":
+            return None
+        text = content.get("text")
+        if not isinstance(text, str):
+            return None
+        if isinstance(text, str) and text.startswith(prefix):
+            command = text[len(prefix):]
+            if command:
+                matches.append(command)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _acp_permission_outcome(params: dict[str, Any]) -> dict[str, str]:
+    """Apply Hermes command policy to an ACP permission request, failing closed."""
+    command = _acp_bash_permission_command(params)
+    if command is None:
+        return {"outcome": "cancelled"}
+    try:
+        from tools.approval import check_all_command_guards
+
+        decision = check_all_command_guards(command, "local", has_host_access=True)
+        if not isinstance(decision, dict) or type(decision.get("approved")) is not bool:
+            return {"outcome": "cancelled"}
+        allow = decision["approved"]
+    except Exception:
+        logger.exception("ACP permission policy failed; cancelling request.")
+        return {"outcome": "cancelled"}
+    if option_id := _acp_permission_option(params, allow=allow):
+        return {"outcome": "selected", "optionId": option_id}
+    return {"outcome": "cancelled"}
 
 
 def _acp_supported(command: str, args: list[str]) -> bool | None:
@@ -287,7 +383,16 @@ class CopilotACPClient:
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
-        self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
+        if acp_cwd:
+            resolved_cwd = Path(acp_cwd)
+        else:
+            # Gateways multiplex profile-scoped workspaces in one long-lived process.
+            # os.getcwd() is only the gateway launch directory and can point ACP agents at
+            # the operational Hermes data tree rather than the active profile workspace.
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            resolved_cwd = resolve_agent_cwd()
+        self._acp_cwd = str(resolved_cwd.resolve())
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self.is_closed = False
         # Clients are cached and shared across concurrent callers (auxiliary tasks, async
@@ -480,7 +585,7 @@ class CopilotACPClient:
             return True
         message_id = msg.get("id")
         if method == "session/request_permission":
-            response = _jsonrpc_result(message_id, {"outcome": {"outcome": "cancelled"}})
+            response = _jsonrpc_result(message_id, {"outcome": _acp_permission_outcome(msg.get("params") or {})})
         elif method in _FS_HANDLERS:
             if not allow_file_requests:
                 response = _jsonrpc_error(message_id, -32601, "File access is unavailable during model discovery.")
