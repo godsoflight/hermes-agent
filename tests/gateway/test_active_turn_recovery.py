@@ -430,6 +430,40 @@ async def test_runner_active_turn_carrier_clears_the_exact_resolved_key():
 
 
 @pytest.mark.asyncio
+async def test_processing_receipt_follows_durable_marker_and_uses_intake_adapter():
+    order = []
+    adapter = SimpleNamespace(_run_processing_hook=AsyncMock(side_effect=lambda *a: order.append("receipt")))
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = MagicMock()
+    setattr(runner, "_async_session_store", SimpleNamespace(
+        _store=runner.session_store,
+        mark_turn_active=AsyncMock(side_effect=lambda key: order.append("marker") or "token-1"),
+    ))
+    runner._intake_adapter_for = MagicMock(return_value=adapter)
+    event = SimpleNamespace()
+    source = _make_source()
+
+    assert await runner._begin_durable_turn_processing(cast(Any, event), source, "session-key") is True
+    assert order == ["marker", "receipt"]
+    runner._intake_adapter_for.assert_called_once_with(source)
+
+
+@pytest.mark.asyncio
+async def test_marker_failure_emits_no_processing_receipt():
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = MagicMock()
+    setattr(runner, "_async_session_store", SimpleNamespace(
+        _store=runner.session_store, mark_turn_active=AsyncMock(return_value=None)
+    ))
+    runner._intake_adapter_for = MagicMock()
+
+    assert await runner._begin_durable_turn_processing(
+        cast(Any, SimpleNamespace()), _make_source(), "session-key"
+    ) is False
+    runner._intake_adapter_for.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_runner_active_turn_clear_is_best_effort():
     runner = object.__new__(GatewayRunner)
     runner.session_store = MagicMock()

@@ -1752,6 +1752,17 @@ class GatewayInboundMixin:
         event._gateway_active_turn_token = token
         return True
 
+    async def _begin_durable_turn_processing(
+        self, event: "MessageEvent", source: SessionSource, session_key: str
+    ) -> bool:
+        """Persist turn ownership, then emit the runner's processing receipt."""
+        if not await self._mark_durable_active_turn(event, session_key):
+            return False
+        adapter = getattr(self, "_intake_adapter_for")(source)
+        if adapter is not None:
+            await adapter._run_processing_hook("on_processing_start", event)
+        return True
+
     async def _clear_durable_active_turn(self, event: "MessageEvent") -> bool:
         """Best-effort CAS clear of the marker owned by *event* (3 attempts; never blocks agent/lease
         release — a stale marker is bounded by the agent timeout and clean-start discard)."""

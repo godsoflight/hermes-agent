@@ -122,6 +122,18 @@ async def test_on_processing_start_handles_missing_ids(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_on_processing_complete_success_sets_positive_reaction(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+
+    await adapter.on_processing_complete(_make_event(), ProcessingOutcome.SUCCESS)
+
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123, message_id=456, reaction="\U0001f44d"
+    )
+
+
+@pytest.mark.asyncio
 async def test_on_processing_complete_cancelled_clears_reaction(monkeypatch):
     """Cancelled processing should clear the in-progress reaction.
 

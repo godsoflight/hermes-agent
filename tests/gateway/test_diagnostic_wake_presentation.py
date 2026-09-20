@@ -50,3 +50,33 @@ async def test_diagnostic_wake_executes_without_final_or_error_echo(tmp_path, mo
     await adapter._process_message_background(event, "session")
     assert bool(adapter.sent) is not suppressed
     assert adapter._run_processing_hook.await_args.args[-1].value == "failure"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner_wired, expected_starts", [(False, 1), (True, 0)])
+async def test_runner_wiring_alone_defers_eager_processing_start(
+    tmp_path, monkeypatch, runner_wired, expected_starts
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = Adapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
+    adapter.sent = []
+    adapter._processing_start_deferred_to_runner = runner_wired
+    adapter._start_typing_refresh = lambda *a: None
+    adapter._stop_typing_refresh = AsyncMock()
+    adapter._run_processing_hook = AsyncMock()
+    adapter._fire_post_delivery_callback = AsyncMock()
+    adapter._flush_text_debounce_now = AsyncMock()
+    adapter._finish_session_task = lambda *a: None
+    adapter.send_final_ledgered = AsyncMock(return_value=(SendResult(success=True), adapter))
+    adapter._message_handler = AsyncMock(return_value="done")
+    event = MessageEvent(
+        text="hello", source=SessionSource(platform=Platform.TELEGRAM, chat_id="chat")
+    )
+
+    await adapter._process_message_background(event, "session")
+
+    starts = [
+        call for call in adapter._run_processing_hook.await_args_list
+        if call.args and call.args[0] == "on_processing_start"
+    ]
+    assert len(starts) == expected_starts

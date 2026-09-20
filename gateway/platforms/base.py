@@ -3339,6 +3339,7 @@ class BasePlatformAdapter(ABC):
     _ACK_EMOJI: Optional[str] = None
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
+    _processing_start_deferred_to_runner: bool = False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
@@ -4344,7 +4345,8 @@ class BasePlatformAdapter(ABC):
         _thread_metadata = _thread_metadata_for_event(event)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
-            await self._run_processing_hook("on_processing_start", event)
+            if not getattr(self, "_processing_start_deferred_to_runner", False):
+                await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.

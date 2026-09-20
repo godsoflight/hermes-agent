@@ -2067,7 +2067,9 @@ class GatewayTurnMixin:
 
         # A turn becomes durable recovery work only after it owns the per-session lease; marking
         # earlier would falsely recover a message that never began processing.
-        await self._mark_durable_active_turn(event, session_entry.session_key)
+        await getattr(self, "_begin_durable_turn_processing")(
+            event, source, session_entry.session_key
+        )
 
         # An unreadable store is not an empty conversation: stop before the agent invents continuity
         # from []. Restore task-local context here (before the broad cleanup finally).
