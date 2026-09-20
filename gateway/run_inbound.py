@@ -1283,6 +1283,12 @@ class GatewayInboundMixin:
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
+        # Never make inbound work queue behind optional background compaction.  This
+        # synchronous cancellation only revokes commit admission and schedules task
+        # cancellation; it performs no join or I/O on the dispatch path.
+        _idle_compactions = getattr(self, "_idle_compactions", None)
+        if _idle_compactions is not None:
+            _idle_compactions.cancel(_quick_key)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply

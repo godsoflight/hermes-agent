@@ -1686,6 +1686,9 @@ class GatewayShutdownMixin:
         logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
         ctx.started_at = time.monotonic()
         self._running = False
+        _idle_compactions = getattr(self, "_idle_compactions", None)
+        if _idle_compactions is not None:
+            await _idle_compactions.shutdown()
         self._clear_plugin_message_injector()
         self._draining = True
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.

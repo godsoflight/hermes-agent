@@ -95,6 +95,15 @@ class SessionTurnLeaseRegistry:
         for sid in idle[:overflow]:
             self._leases.pop(sid, None)
 
+    def available(self, session_id: str) -> bool:
+        """Lock-free loop-local probe used by best-effort background work.
+
+        Unlike :meth:`acquire`, this never creates an entry and never queues behind a
+        turn: missing and completely idle leases are available.
+        """
+        lease = self._leases.get(session_id)
+        return lease is None or lease.idle
+
     async def acquire(
         self, session_id: str, *, owner_key: str, generation: int, timeout: Optional[float] = None
     ) -> Optional[TurnLeaseToken]:

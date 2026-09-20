@@ -430,6 +430,12 @@ class GatewayTurnMixin:
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
+        # The quick routing key can alias an already-resolved session id.  Cancel by
+        # the canonical id as soon as resolution completes, still before turn-lease
+        # acquisition or transcript loading.
+        _idle_compactions = getattr(self, "_idle_compactions", None)
+        if _idle_compactions is not None:
+            _idle_compactions.cancel(session_entry.session_id)
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
@@ -604,6 +610,133 @@ class GatewayTurnMixin:
             raise
         if _lease_token is not None:
             self._session_state(_quick_key).turn.lease_tokens[run_generation] = _lease_token
+
+    async def _idle_compaction_current_watermark(self, record):
+        """Read the active-row tip off-loop for the coordinator's start/wake fence."""
+        session_id = record.payload[2]
+        db = getattr(self._session_db, "_db", self._session_db)
+        return await asyncio.to_thread(db.get_active_message_watermark, session_id)
+
+    @staticmethod
+    def _idle_compaction_delay_from_config(data) -> float:
+        comp = data.get("compression") if isinstance(data, dict) else None
+        if not isinstance(comp, dict):
+            return 0.0
+        try:
+            return max(0.0, float(comp.get("idle_compact_after_seconds", 0) or 0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _schedule_idle_compaction_after_turn(
+        self, source, session_entry, session_key: str, run_generation: int,
+    ) -> None:
+        """Arm the opt-in post-turn timer without adding latency to the completed turn."""
+        from gateway.run import _load_gateway_config
+        coordinator = getattr(self, "_idle_compactions", None)
+        if coordinator is None:
+            return
+        data = _load_gateway_config()
+        delay = self._idle_compaction_delay_from_config(data)
+        coordinator.schedule(
+            session_entry.session_id,
+            delay_seconds=delay,
+            watermark=None,
+            worker=self._run_idle_background_compaction,
+            payload=(
+                source, session_entry, session_entry.session_id,
+                session_key, int(run_generation), time.time(),
+            ),
+        )
+
+    async def _idle_compaction_floor_allows(self, agent, history, delay: float, idle_gap: float):
+        """Apply the same cooldown and honest post-summary floor as turn-time idle compaction."""
+        from agent import turn_context as tc
+        compressor = agent.context_compressor
+        if not agent.compression_enabled or idle_gap < delay:
+            return False, 0
+        if bool(getattr(compressor, "awaiting_real_usage_after_compression", False)):
+            return False, 0
+        prompt = getattr(agent, "system_message", None) or getattr(agent, "system_prompt", "") or ""
+        tokens = await asyncio.to_thread(tc._preflight_request_tokens, agent, history, prompt)
+        cooldown_fn = getattr(compressor, "get_active_compression_failure_cooldown", lambda: None)
+        cooldown = await asyncio.to_thread(cooldown_fn)
+        last = getattr(compressor, "last_compression_rough_tokens", 0)
+        if not isinstance(last, int) or isinstance(last, bool):
+            last = 0
+        floor = int(compressor.threshold_tokens * compressor.summary_target_ratio)
+        allowed = tc._should_idle_compact(
+            enabled=True, idle_after_seconds=delay, idle_gap_seconds=idle_gap,
+            tokens=tokens, floor_tokens=floor, cooldown_active=bool(cooldown),
+            last_compaction_tokens=last,
+        )
+        return bool(allowed), int(tokens)
+
+    async def _run_idle_background_compaction(self, record) -> None:
+        """Revalidate every safety guard, then use the hygiene agent's fenced commit path."""
+        from gateway.run import _load_gateway_config
+        source, session_entry, expected_session_id, session_key, run_generation, completed_at = record.payload
+        delay = self._idle_compaction_delay_from_config(_load_gateway_config())
+        if delay <= 0 or time.time() - completed_at < delay:
+            return
+        if not getattr(self, "_running", False):
+            return
+        if session_entry.session_id != expected_session_id:
+            return
+        if self._peek_running_agent(session_key) is not None:
+            return
+        leases = getattr(self, "_turn_leases", None)
+        if leases is not None and not leases.available(session_entry.session_id):
+            return
+        if await self._session_has_compression_in_flight(session_key):
+            return
+
+        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        if not history or len(history) < 4:
+            return
+        hs = await self._hmwa_hygiene_settings(source, session_key)
+        if not hs.compression_enabled:
+            return
+        model, runtime = self._resolve_session_agent_runtime(
+            source=source, session_key=session_key,
+            user_config=hs.data if isinstance(hs.data, dict) else None,
+        )
+        # The app-server has a separate native compaction protocol without this fence;
+        # never run it as cancellable background work.
+        if str(runtime.get("api_mode") or "").lower() == "codex_app_server":
+            return
+        if not runtime.get("api_key"):
+            return
+        floor_agent, _ = await self._hmwa_hygiene_build_agent(model, runtime, session_entry)
+        try:
+            allowed, tokens = await self._idle_compaction_floor_allows(
+                floor_agent, history, delay, time.time() - completed_at,
+            )
+        finally:
+            await self._cleanup_agent_resources_off_loop(
+                floor_agent, context="idle background compaction preflight",
+            )
+        if not allowed:
+            return
+        # Building/configuring the dedicated agent can take time.  Fence the exact tip,
+        # lease state, and compression lock again immediately before starting its worker.
+        if await self._idle_compaction_current_watermark(record) != record.watermark:
+            return
+        if self._peek_running_agent(session_key) is not None:
+            return
+        if leases is not None and not leases.available(session_entry.session_id):
+            return
+        if await self._session_has_compression_in_flight(session_key):
+            return
+        attempt = self._HygieneAttempt(agent=None, meta={}, history=history)
+        attempt.idle_record = record
+        plan = self._HygienePlan(True, tokens, len(history), 0)
+        # Background work has no turn-hold budget; the compressor's idle timeout and
+        # hard ceiling remain in force.
+        hs.max_turn_hold_seconds = hs.total_ceiling_seconds
+        await self._hmwa_hygiene_detached_attempt(
+            attempt, hs, plan, history, list(history), model, runtime,
+            source, session_entry, session_key, session_key, run_generation,
+        )
 
     @dataclasses.dataclass
     class _HygienePlan:
@@ -1289,6 +1422,12 @@ class GatewayTurnMixin:
             # Default executor (NOT self._get_executor): a hung summary must never occupy an
             # agent-work slot. MUST run in the caller's contextvars (multiplex secret scope).
             attempt.commit_fence = _hyg_commit_fence
+            _idle_record = getattr(attempt, "idle_record", None)
+            if _idle_record is not None:
+                # revoke_commit_admission is lock-free and therefore safe on the inbound
+                # fast path.  A commit that already crossed begin_commit remains protected
+                # by the active-row watermark fence.
+                _idle_record.cancel_active = _hyg_commit_fence.revoke_commit_admission
             attempt.future = loop.run_in_executor(
                 None,
                 # But it MUST run inside the caller's contextvars: under multiplex_profiles the profile
@@ -2231,6 +2370,9 @@ class GatewayTurnMixin:
                 response=response, agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
+            )
+            self._schedule_idle_compaction_after_turn(
+                source, session_entry, session_key, run_generation,
             )
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,

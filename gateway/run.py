@@ -3518,6 +3518,12 @@ class GatewayRunner(
         # Per-SESSION_ID turn lease: serializes [load history → run → flush] when two ROUTING KEYS resolve
         # to one session_id (switch_session's many-to-one mapping), which routing-key guards cannot see.
         self._turn_leases = SessionTurnLeaseRegistry()
+        # Opt-in post-turn idle compaction timers.  They are loop-local, coalesced per
+        # resolved session id, and cancelled synchronously by the inbound fast path.
+        from gateway.idle_compaction import IdleCompactionCoordinator
+        self._idle_compactions = IdleCompactionCoordinator(
+            current_watermark=self._idle_compaction_current_watermark,
+        )
         # Stall-notified keys clear when pending clears / activity resumes / conversation boundary.
         # Held turn-lease tokens live on SessionState.turn.lease_tokens keyed by run generation, so a
         # stale unwind can never free a newer turn's lease (#28686). Runner-level queued interrupt text lives on
