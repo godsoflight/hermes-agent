@@ -1091,7 +1091,7 @@ class TurnRunner:
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
-        return ctx.AIAgent(
+        agent = ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
@@ -1114,6 +1114,8 @@ class TurnRunner:
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
         )
+        agent.compression_idle_compact_after_seconds = 0
+        return agent
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
         """Reuse this session's cached AIAgent (frozen system prompt + tool schemas → prompt cache
@@ -1152,6 +1154,11 @@ class TurnRunner:
                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
                     runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
+        assert agent is not None
+        # Messaging gateways own idle compaction as cancellable post-turn work. Disable the
+        # agent's legacy pre-turn idle pass for both fresh and cached agents so an arriving
+        # message can never inherit that latency. CLI/TUI agents keep their existing behavior.
+        agent.compression_idle_compact_after_seconds = 0
         return agent, found.reused
 
     # ── per-turn agent wiring ───────────────────────────────────────────────────────────────

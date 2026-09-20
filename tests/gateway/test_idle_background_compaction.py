@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from gateway.idle_compaction import IdleCompactionCoordinator
+from gateway.run_turn_runner import TurnRunner
 
 
 @pytest.mark.asyncio
@@ -95,3 +98,45 @@ async def test_shutdown_cancels_all_delayed_tasks():
     assert coordinator.tasks == {}
     assert all(task is not None and task.cancelled() for task in tasks)
     assert not started.is_set()
+
+
+def test_gateway_turn_agent_disables_legacy_foreground_idle_compaction():
+    """The same opt-in knob schedules post-turn work; it must not also block the next turn."""
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.compression_idle_compact_after_seconds = 300
+
+    source = SimpleNamespace(
+        user_id="u", user_id_alt=None, user_name="Ricci", chat_id="c",
+        chat_name="chat", chat_type="private", thread_id=None,
+    )
+    ctx = SimpleNamespace(
+        AIAgent=FakeAgent,
+        user_config={"compression": {"idle_compact_after_seconds": 300}},
+        enabled_toolsets=None,
+        disabled_toolsets=None,
+        session_id="sid",
+        session_key="telegram:c",
+        source=source,
+    )
+    runner = SimpleNamespace(
+        _prefill_messages=None,
+        _service_tier="auto",
+        _session_db=None,
+        _refresh_fallback_model=lambda: None,
+    )
+    turn_runner: Any = object.__new__(TurnRunner)
+    turn_runner._ctx = ctx
+    turn_runner._runner = runner
+
+    agent = turn_runner._build_fresh_agent(
+        {"model": "m", "runtime": {}, "request_overrides": {}},
+        "telegram", "", 80, None,
+        {"only": None, "ignore": None, "order": None, "sort": None,
+         "require_parameters": False, "data_collection": None},
+        False,
+    )
+
+    assert agent.compression_idle_compact_after_seconds == 0
