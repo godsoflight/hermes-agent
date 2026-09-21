@@ -306,7 +306,8 @@ def test_continuation_turn_records_attempt_and_original_prompt(
         return {"final_response": "done"}
 
     agent = types.SimpleNamespace(
-        session_id="session-key", run_conversation=_run, clear_interrupt=lambda: None
+        session_id="session-key", run_conversation=_run, clear_interrupt=lambda: None,
+        _acknowledgement_history=[], _completion_history=[],
     )
     session = _session(
         agent=agent,
@@ -321,6 +322,17 @@ def test_continuation_turn_records_attempt_and_original_prompt(
     # Consumed, so the NEXT user turn starts from a clean slate.
     assert "_auto_continue_attempt" not in session
     assert "_auto_continue_prompt" not in session
+    assert agent._acknowledgement_history == []
+    assert agent._completion_history == []
+
+
+def test_queued_prompt_preserves_original_submit_timestamp():
+    session = {"history_lock": threading.RLock(), "inflight_turn": None}
+    server._enqueue_prompt(session, "first", None, submitted_monotonic=12.5)
+    server._enqueue_prompt(session, "second", None, submitted_monotonic=13.5)
+
+    assert session["queued_prompt"]["submitted_monotonic"] == 12.5
+    assert session["queued_prompt"]["text"] == "first\n\nsecond"
 
 
 def test_older_agent_still_gets_the_post_turn_stamp(emits, turn_env, marker_home):

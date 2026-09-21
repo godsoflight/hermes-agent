@@ -631,6 +631,14 @@ export interface Usage {
   cache_write?: number | null
   avg_latency_s?: number | null
   avg_tps?: number | null
+  api_duration_p50_s?: number | null
+  api_duration_p95_s?: number | null
+  first_chunk_p50_s?: number | null
+  first_chunk_p95_s?: number | null
+  acknowledgement_p50_s?: number | null
+  acknowledgement_p95_s?: number | null
+  completion_p50_s?: number | null
+  completion_p95_s?: number | null
   active_subagents?: number | null
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
@@ -2801,6 +2809,14 @@ export interface SessionUsageResult {
   cache_write?: number | null
   avg_latency_s?: number | null
   avg_tps?: number | null
+  api_duration_p50_s?: number | null
+  api_duration_p95_s?: number | null
+  first_chunk_p50_s?: number | null
+  first_chunk_p95_s?: number | null
+  acknowledgement_p50_s?: number | null
+  acknowledgement_p95_s?: number | null
+  completion_p50_s?: number | null
+  completion_p95_s?: number | null
   active_subagents?: number | null
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null

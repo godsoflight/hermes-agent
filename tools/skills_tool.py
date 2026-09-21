@@ -4,7 +4,7 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
-import hashlib
+
 import json
 import logging
 import os
@@ -494,7 +494,8 @@ def _provably_same_skill(candidates) -> bool:
     try:
         if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
             return True
-        return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
+        from agent.skill_package import skill_package_digest
+        return len({skill_package_digest(smd) for _sd, smd in candidates}) == 1
     except OSError:
         return False
 
@@ -513,18 +514,27 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
     if len(candidates) > 1:
         # The refusal below guards against one skill silently shadowing another. Copies of ONE
-        # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)
-        # shadow nothing, so rank them instead; different content, an equal-rank tie or a
-        # cross-tier spread still refuses.
+        # skill can appear under several configured search roots. Identical full packages
+        # shadow nothing, so resolve them by configured root precedence; divergent packages
+        # still refuse rather than silently selecting one.
         roots = {_owning_search_dir(smd, all_dirs) for _sd, smd in candidates}
-        if len(roots) == 1 and None not in roots and _provably_same_skill(candidates):
-            root = roots.pop()
-            assert root is not None
+        if None not in roots and _provably_same_skill(candidates):
+            root_order = {Path(root).resolve(): index for index, root in enumerate(all_dirs)}
+
+            def _candidate_rank(candidate):
+                root = _owning_search_dir(candidate[1], all_dirs)
+                assert root is not None
+                return (
+                    root_order.get(root.resolve(), len(root_order)),
+                    *_rank_same_root_candidate(candidate, root),
+                    str(candidate[1]),
+                )
+
             ranked = sorted(
                 candidates,
-                key=lambda c: (*_rank_same_root_candidate(c, root), str(c[1].relative_to(root))),
+                key=_candidate_rank,
             )
-            logger.info("Skill '%s': %d identical same-root copies, resolved to %s (duplicates: %s)",
+            logger.info("Skill '%s': %d identical package copies, resolved to %s (duplicates: %s)",
                         name, len(candidates), ranked[0][1],
                         "; ".join(str(smd) for _sd, smd in ranked[1:]))
             candidates = [ranked[0]]

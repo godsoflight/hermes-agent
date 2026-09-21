@@ -10,6 +10,8 @@ post-turn follow-ups (queued prompt, goal continuation, notifications).
 from __future__ import annotations
 
 import dataclasses
+import contextlib
+import time
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -931,6 +933,8 @@ def _run_prompt_submit(
     if admitted is None:
         return False
     images, agent = admitted
+    submitted_monotonic = session.pop("_turn_submitted_monotonic", None)
+    track_submit_spans = isinstance(submitted_monotonic, (int, float))
     from gateway.warning_notifications import diagnostic_turn_muted
     from agent.notification_presentation import notification_config_snapshot
     with _session_profile_runtime_scope(session):
@@ -941,6 +945,8 @@ def _run_prompt_submit(
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
+    acknowledgement_duration = (
+        max(0.0, _turn_started_monotonic - submitted_monotonic) if track_submit_spans else None)
     logger.info(
         # Desktop/TUI observability (#86647): this is the ONE INFO record proving a Desktop/TUI prompt was
         # accepted by THIS process, and it ties together every id a rotation-mute trace needs — the UI
@@ -1016,6 +1022,12 @@ def _run_prompt_submit(
                 sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
                 status, st.error_retained, time.monotonic() - _turn_started_monotonic,
                 st.error_detail)
+            if acknowledgement_duration is not None:
+                # Commit the pair together after the terminal frame attempt so their
+                # percentile populations always describe the same completed turns.
+                with contextlib.suppress(Exception):
+                    st.agent._acknowledgement_history.append(acknowledgement_duration)
+                    st.agent._completion_history.append(max(0.0, time.monotonic() - submitted_monotonic))
             # Backstop for turns that never reached a terminal frame.
             if st.receipt_committed:
                 _retire_turn_marker(session, st.marker_key)

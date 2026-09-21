@@ -653,8 +653,7 @@ class TestCacheHitRate:
 class TestRollingLatencyVelocity:
     def _with_history(self, cli_obj, latencies, outputs):
         from collections import deque
-        cli_obj.agent._api_latency_history = deque(latencies, maxlen=10)
-        cli_obj.agent._api_output_history = deque(outputs, maxlen=10)
+        cli_obj.agent._api_throughput_history = deque(zip(latencies, outputs), maxlen=10)
         return cli_obj
 
     def test_latency_and_tps_shown_in_wide_terminal(self):

@@ -5,6 +5,7 @@ method_ctx.bind_module), so they reference server.py globals bare.
 """
 
 import contextlib
+import time
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -563,6 +564,7 @@ _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
 
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
+    submit_started_monotonic = time.monotonic()
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
@@ -649,7 +651,8 @@ def _(rid, params: dict) -> dict:
             # for `running` to clear and resubmits with the truncation intact.
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            submitted_monotonic=submit_started_monotonic)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -660,6 +663,9 @@ def _(rid, params: dict) -> dict:
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
     if err is not None:
         return err
+    # Monotonic and internal-only: survives the cold agent-build wait without
+    # leaking into resume's public inflight payload.
+    session["_turn_submitted_monotonic"] = submit_started_monotonic
     if turn_isolation:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",

@@ -1369,9 +1369,10 @@ class GatewayInboundMixin:
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
             self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
-            # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
-            # recovery pass.
-            await self._clear_durable_active_turn(event)
+            # The intake adapter clears the marker only after final delivery. Direct/non-adapter
+            # callers have no later delivery boundary, so retain the legacy local cleanup.
+            if not callable(getattr(event, "_gateway_durable_turn_completion", None)):
+                await self._clear_durable_active_turn(event)
             # Release only this turn's generation. Eviction may immediately admit a replacement
             # through the cold path; an unconditional release here would then clear the replacement
             # sentinel/agent and lease. Reset/stop release their stale slot before installing a
@@ -1761,9 +1762,20 @@ class GatewayInboundMixin:
     async def _begin_durable_turn_processing(
         self, event: "MessageEvent", source: SessionSource, session_key: str
     ) -> bool:
-        """Persist turn ownership, then emit the runner's processing receipt."""
+        """Persist turn ownership, then emit the runner's processing receipt.
+
+        Marker cleanup is handed to the intake adapter so the durable handoff
+        covers final response delivery, not merely model completion.
+        """
         if not await self._mark_durable_active_turn(event, session_key):
             return False
+
+        event._gateway_processing_started = True
+        if event._gateway_delivery_managed:
+            async def _finish_after_delivery() -> bool:
+                return await self._clear_durable_active_turn(event)
+
+            event._gateway_durable_turn_completion = _finish_after_delivery
         adapter = getattr(self, "_intake_adapter_for")(source)
         if adapter is not None:
             await adapter._run_processing_hook("on_processing_start", event)
@@ -1793,7 +1805,11 @@ class GatewayInboundMixin:
             )
             return False
         finally:
-            for attr in ("_gateway_active_turn_session_key", "_gateway_active_turn_token"):
+            for attr in (
+                "_gateway_active_turn_session_key",
+                "_gateway_active_turn_token",
+                "_gateway_durable_turn_completion",
+            ):
                 with suppress(AttributeError):
                     delattr(event, attr)
 

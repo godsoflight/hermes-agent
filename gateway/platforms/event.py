@@ -88,6 +88,12 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Process-local receipt lifecycle state. The adapter marks delivery ownership
+    # before dispatch; the runner installs a one-shot durable-marker cleanup only
+    # for that managed path.
+    _gateway_delivery_managed: bool = field(default=False, init=False, repr=False, compare=False)
+    _gateway_processing_started: bool = field(default=False, init=False, repr=False, compare=False)
+    _gateway_durable_turn_completion: Any = field(default=None, init=False, repr=False, compare=False)
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

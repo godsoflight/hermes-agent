@@ -381,15 +381,12 @@ class CLIStatusBarMixin:
         # (hidden on Codex app-server, which reports no latency).
         avg_lat = avg_vel = None
         try:
-            lhist = list(getattr(agent, "_api_latency_history", []) or [])
-            ohist = list(getattr(agent, "_api_output_history", []) or [])
-            n = min(len(lhist), len(ohist))  # appended together; keep aligned
-            if n:
-                lhist, ohist = lhist[-n:], ohist[-n:]
-                total_lat = sum(lhist)
+            samples = list(getattr(agent, "_api_throughput_history", []) or [])
+            if samples:
+                total_lat = sum(latency for latency, _output in samples)
                 # Mean for latency; sum/sum for velocity (true throughput, not mean of ratios).
-                avg_lat = _finite(total_lat / n)
-                avg_vel = _finite(sum(ohist) / total_lat if total_lat > 0 else None)
+                avg_lat = _finite(total_lat / len(samples))
+                avg_vel = _finite(sum(output for _latency, output in samples) / total_lat if total_lat > 0 else None)
         except Exception:
             avg_lat = avg_vel = None
         snapshot["avg_latency"] = float(avg_lat) if avg_lat is not None else None

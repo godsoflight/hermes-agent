@@ -73,7 +73,7 @@ def _fold_moa_usage(agent, canonical_usage):
 def record_response_usage(
     agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
-    api_ttft: float | None = None,
+    api_first_chunk: float | None = None,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
     and the API-call log line (see module docstring). No-usage responses only
@@ -84,6 +84,16 @@ def record_response_usage(
     # Token/cost accounting below stays gated on real usage, but the request itself
     # must remain observable.
     agent.session_api_calls += 1
+    # Request timing exists even when the provider omits token usage. Keep it
+    # before the usage gate so the percentile population is all completed calls.
+    with suppress(Exception):
+        latency_hist = getattr(agent, "_api_latency_history", None)
+        if latency_hist is not None and api_duration >= 0:
+            latency_hist.append(float(api_duration))
+        if api_first_chunk is not None and api_first_chunk >= 0:
+            first_chunk_hist = getattr(agent, "_api_first_chunk_history", None)
+            if first_chunk_hist is not None:
+                first_chunk_hist.append(float(api_first_chunk))
     if not (hasattr(response, 'usage') and response.usage):
         if getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage -> cannot adjudicate the prior compaction; consume the
@@ -179,18 +189,10 @@ def record_response_usage(
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
-    # Rolling history for status-bar averages (last 10).
     with suppress(Exception):
-        hist = getattr(agent, "_api_latency_history", None)
-        if hist is not None:
-            hist.append(float(api_duration))
-        ohist = getattr(agent, "_api_output_history", None)
-        if ohist is not None:
-            ohist.append(int(canonical_usage.output_tokens or 0))
-    if api_ttft is not None and api_ttft >= 0:
-        ttft_hist = getattr(agent, "_api_ttft_history", None)
-        if ttft_hist is not None:
-            ttft_hist.append(float(api_ttft))
+        throughput_hist = getattr(agent, "_api_throughput_history", None)
+        if throughput_hist is not None and api_duration >= 0:
+            throughput_hist.append((float(api_duration), int(canonical_usage.output_tokens or 0)))
 
     _cache_pct = ""
     if canonical_usage.cache_read_tokens and prompt_tokens:

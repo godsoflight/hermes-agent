@@ -2330,6 +2330,22 @@ class GatewayTurnMixin:
             # message's id or it collides with an earlier turn's row carrying the same text. Reply
             # routing is untouched: the anchor still comes from this event.
             if isinstance(agent_result, dict):
+                # The queued turn returns through this outer delivery cycle. Move
+                # its durable cleanup onto the event that owns the final send.
+                _queued_completion = agent_result.pop("_gateway_followup_durable_completion", None)
+                if callable(_queued_completion):
+                    _outer_completion = getattr(event, "_gateway_durable_turn_completion", None)
+
+                    async def _finish_outer_and_queued_delivery():
+                        if callable(_outer_completion):
+                            _outer_result = _outer_completion()
+                            if inspect.isawaitable(_outer_result):
+                                await _outer_result
+                        _queued_result = _queued_completion()
+                        if inspect.isawaitable(_queued_result):
+                            await _queued_result
+
+                    event._gateway_durable_turn_completion = _finish_outer_and_queued_delivery
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
                 if _terminal_inbound:
                     event.ledger_message_id = str(_terminal_inbound)
@@ -3975,7 +3991,30 @@ class GatewayTurnMixin:
         # different profile's adapter, and only that instance holds the per-message reaction state.
         from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
         _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
-        await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
+        _durable_started = False
+        if pending_event is not None and (
+            hasattr(self, "async_session_store")
+            or "_begin_durable_turn_processing" in getattr(self, "__dict__", {})
+        ):
+            # The outer adapter delivers this recursive turn's result.
+            pending_event._gateway_delivery_managed = True
+            _durable_started = await getattr(self, "_begin_durable_turn_processing")(
+                pending_event, next_source, next_session_key
+            )
+        if not _durable_started:
+            await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
+        async def _finish_failed_followup_delivery() -> None:
+            """A failed queued turn has no outer final-send boundary to own its marker."""
+            completion = getattr(pending_event, "_gateway_durable_turn_completion", None)
+            if not callable(completion):
+                return
+            try:
+                completion_result = completion()
+                if inspect.isawaitable(completion_result):
+                    await completion_result
+            except Exception:
+                logger.warning("Queued follow-up durable cleanup failed", exc_info=True)
+
         # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
         # (the helper's own ``except Exception`` does not catch cancellation).
         try:
@@ -3992,12 +4031,19 @@ class GatewayTurnMixin:
                 persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
             )
         except asyncio.CancelledError:
-            await _run_followup_processing_hook(
-                _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
+            try:
+                await _run_followup_processing_hook(
+                    _hook_adapter, pending_event, "on_processing_complete",
+                    _followup_cancel_outcome(_hook_adapter))
+            finally:
+                await _finish_failed_followup_delivery()
             raise
         except BaseException:
-            await _run_followup_processing_hook(
-                _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
+            try:
+                await _run_followup_processing_hook(
+                    _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
+            finally:
+                await _finish_failed_followup_delivery()
             raise
         await _run_followup_processing_hook(
             _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
@@ -4017,6 +4063,22 @@ class GatewayTurnMixin:
                     (pending_event.metadata or {}).get("notification_category", "result")
                     if pending_event is not None and pending_event.internal else "result"),
             }
+        if isinstance(merged, dict) and pending_event is not None:
+            _current_completion = getattr(pending_event, "_gateway_durable_turn_completion", None)
+            _nested_completion = merged.get("_gateway_followup_durable_completion")
+            if callable(_current_completion):
+                if callable(_nested_completion):
+                    async def _finish_queued_chain():
+                        _current_result = _current_completion()
+                        if inspect.isawaitable(_current_result):
+                            await _current_result
+                        _nested_result = _nested_completion()
+                        if inspect.isawaitable(_nested_result):
+                            await _nested_result
+
+                    merged["_gateway_followup_durable_completion"] = _finish_queued_chain
+                else:
+                    merged["_gateway_followup_durable_completion"] = _current_completion
         return merged
 
     async def _run_agent_cleanup_turn_tasks(

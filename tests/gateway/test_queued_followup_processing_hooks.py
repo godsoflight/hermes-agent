@@ -10,6 +10,7 @@ reaction from those hooks (Slack 👀, Discord, Telegram, Feishu, Matrix,
 Signal, ...) silently skips the acknowledgement for mid-turn messages.
 """
 
+import asyncio
 import importlib
 import sys
 import types
@@ -61,6 +62,10 @@ class HookRecordingAdapter(BasePlatformAdapter):
         self.completed.append((getattr(event, "message_id", None), outcome))
 
 
+class DeferredHookRecordingAdapter(HookRecordingAdapter):
+    _processing_start_deferred_to_runner = True
+
+
 class _TwoTurnAgent:
     calls: list = []
 
@@ -86,6 +91,18 @@ class _RaisingSecondTurnAgent:
         type(self).calls.append(message)
         if len(type(self).calls) >= 2:
             raise RuntimeError("boom in the queued follow-up turn")
+        return {
+            "final_response": "done-1",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class _CancellingSecondTurnAgent(_RaisingSecondTurnAgent):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
+        type(self).calls.append(message)
+        if len(type(self).calls) >= 2:
+            raise asyncio.CancelledError()
         return {
             "final_response": "done-1",
             "messages": [],
@@ -164,6 +181,28 @@ def _source():
     return SessionSource(platform=Platform.TELEGRAM, chat_id="4242", chat_type="dm")
 
 
+async def _async_result(value):
+    return value
+
+
+@pytest.mark.asyncio
+async def test_deferred_completion_requires_durable_admission():
+    """A command/rejection that never got a runner start receipt must not get
+    a synthetic completion receipt from the adapter."""
+    adapter = DeferredHookRecordingAdapter()
+
+    async def command_handler(_event):
+        return "command response"
+
+    adapter._message_handler = command_handler
+    event = MessageEvent(
+        text="/status", message_type=MessageType.TEXT, source=_source(), message_id="command")
+    await adapter._process_message_background(event, SESSION_KEY)
+
+    assert adapter.started == []
+    assert adapter.completed == []
+
+
 @pytest.mark.asyncio
 async def test_queued_followup_fires_processing_hooks(monkeypatch, tmp_path):
     """The runner-drained follow-up gets the same start/complete hooks as a
@@ -200,6 +239,82 @@ async def test_queued_followup_fires_processing_hooks(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_queued_followup_clears_durable_marker_only_after_final_send(monkeypatch, tmp_path):
+    """The outer adapter owns delivery for an in-band follow-up, so the queued
+    turn's durable marker must survive model completion until that send ends."""
+    _TwoTurnAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _TwoTurnAgent)
+
+    order = []
+    adapter = HookRecordingAdapter()
+    heartbeat_acceptance = importlib.import_module("gateway.run_heartbeat_acceptance")
+    monkeypatch.setattr(heartbeat_acceptance, "heartbeat_owner_is_current", lambda *_args: True)
+    runner = _make_runner(adapter)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+        text="the durable follow-up",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        message_id="queued-durable",
+    )
+
+    async def begin_durable(event, _source, _session_key):
+        assert event._gateway_delivery_managed is True
+
+        async def clear_after_delivery():
+            order.append("clear")
+
+        event._gateway_durable_turn_completion = clear_after_delivery
+        return True
+
+    async def handle(event):
+        prepared = runner._PreparedTurn(
+            [], "", "the first turn", "the first turn", None, "user",
+            "sess-durable-followup", "owner",
+        )
+        runner._hmwa_resolve_session = lambda *_args: _async_result(
+            (_source(), SimpleNamespace(session_id="sess-durable-followup"), SESSION_KEY)
+        )
+        runner._hmwa_prepare_turn = lambda *_args: _async_result((prepared, {}))
+        runner.hooks.emit = lambda *_args: _async_result(None)
+        runner._hmwa_stop_typing_for_turn = lambda *_args: _async_result(None)
+        runner._is_session_run_current = lambda *_args: True
+        runner._hmwa_shape_agent_response = lambda *_args, **_kwargs: _async_result(
+            (_args[0]["final_response"], False, [])
+        )
+        runner._hmwa_prepend_reasoning = lambda _result, response, *_args: response
+        runner._hmwa_runtime_footer_line = lambda *_args: None
+        runner._hmwa_post_turn_hooks = lambda *_args: _async_result(None)
+        runner._hmwa_classify_turn_failure = lambda *_args: (False, False, False)
+        runner._hmwa_compression_exhaustion_reset = (
+            lambda _result, response, session, *_args: _async_result((response, session))
+        )
+        runner._hmwa_persist_turn_transcript = lambda **_kwargs: _async_result(None)
+        runner._schedule_idle_compaction_after_turn = lambda *_args: None
+        runner._hmwa_deliver_turn_response = lambda *_args: _async_result(_args[6])
+        runner._clear_session_env = lambda *_args: None
+        runner._reply_anchor_for_event = lambda *_args: None
+        return await runner._handle_message_with_agent(event, _source(), SESSION_KEY, 1)
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        order.append("send")
+        return SendResult(success=True, message_id="sent-durable")
+
+    runner._begin_durable_turn_processing = begin_durable
+    adapter._message_handler = handle
+    monkeypatch.setattr(adapter, "send", send)
+    outer = MessageEvent(
+        text="the first turn",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        message_id="outer-durable",
+    )
+
+    await adapter._process_message_background(outer, SESSION_KEY)
+
+    assert order == ["send", "clear"]
+
+
+@pytest.mark.asyncio
 async def test_queued_followup_failure_completes_the_hook(monkeypatch, tmp_path):
     """A follow-up turn that blows up still closes its hook, so a platform
     never strands a 'still working' marker on the user's message."""
@@ -216,6 +331,18 @@ async def test_queued_followup_failure_completes_the_hook(monkeypatch, tmp_path)
         message_id="queued-2",
     )
 
+    durable_clears = []
+
+    async def begin_durable(event, _source, _session_key):
+        async def clear_after_failure():
+            durable_clears.append(event.message_id)
+
+        event._gateway_durable_turn_completion = clear_after_failure
+        await adapter._run_processing_hook("on_processing_start", event)
+        return True
+
+    runner._begin_durable_turn_processing = begin_durable
+
     with pytest.raises(RuntimeError):
         await runner._run_agent(
             message="the first turn",
@@ -228,6 +355,47 @@ async def test_queued_followup_failure_completes_the_hook(monkeypatch, tmp_path)
 
     assert adapter.started == ["queued-2"]
     assert adapter.completed == [("queued-2", ProcessingOutcome.FAILURE)]
+    assert durable_clears == ["queued-2"]
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_cancellation_clears_durable_marker(monkeypatch, tmp_path):
+    _CancellingSecondTurnAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _CancellingSecondTurnAgent)
+
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+        text="the cancelled follow-up",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        message_id="queued-cancelled",
+    )
+    durable_clears = []
+
+    async def begin_durable(event, _source, _session_key):
+        async def clear_after_cancellation():
+            durable_clears.append(event.message_id)
+
+        event._gateway_durable_turn_completion = clear_after_cancellation
+        await adapter._run_processing_hook("on_processing_start", event)
+        return True
+
+    runner._begin_durable_turn_processing = begin_durable
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_agent(
+            message="the first turn",
+            context_prompt="",
+            history=[],
+            source=_source(),
+            session_id="sess-hooks-cancelled",
+            session_key=SESSION_KEY,
+        )
+
+    assert durable_clears == ["queued-cancelled"]
+    assert adapter.started == ["queued-cancelled"]
+    assert adapter.completed == [("queued-cancelled", ProcessingOutcome.FAILURE)]
 
 
 @pytest.mark.asyncio

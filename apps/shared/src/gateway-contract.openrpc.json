@@ -27259,6 +27259,102 @@
             "default": null,
             "title": "Avg Tps"
           },
+          "api_duration_p50_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Duration P50 S"
+          },
+          "api_duration_p95_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Duration P95 S"
+          },
+          "first_chunk_p50_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "First Chunk P50 S"
+          },
+          "first_chunk_p95_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "First Chunk P95 S"
+          },
+          "acknowledgement_p50_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Acknowledgement P50 S"
+          },
+          "acknowledgement_p95_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Acknowledgement P95 S"
+          },
+          "completion_p50_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completion P50 S"
+          },
+          "completion_p95_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completion P95 S"
+          },
           "active_subagents": {
             "anyOf": [
               {
@@ -31474,6 +31570,102 @@
             ],
             "default": null,
             "title": "Avg Tps"
+          },
+          "api_duration_p50_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Duration P50 S"
+          },
+          "api_duration_p95_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Duration P95 S"
+          },
+          "first_chunk_p50_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "First Chunk P50 S"
+          },
+          "first_chunk_p95_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "First Chunk P95 S"
+          },
+          "acknowledgement_p50_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Acknowledgement P50 S"
+          },
+          "acknowledgement_p95_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Acknowledgement P95 S"
+          },
+          "completion_p50_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completion P50 S"
+          },
+          "completion_p95_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completion P95 S"
           },
           "active_subagents": {
             "anyOf": [

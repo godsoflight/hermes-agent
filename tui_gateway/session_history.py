@@ -319,6 +319,7 @@ def _record_inflight_correction(session: dict, text: Any) -> None:
 
 def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
+    session.pop("_turn_submitted_monotonic", None)
     # A turn that never reached the agent (cancelled/refused before ready) leaves its submit-time row
     # as the durable record of the send; a later turn must not adopt it as its own input.
     session.pop("_submit_user_row", None)

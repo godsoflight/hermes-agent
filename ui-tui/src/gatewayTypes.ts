@@ -263,8 +263,12 @@ export interface SessionUsageResponse {
   model?: string
   output?: number
   total?: number
-  ttft_p50_s?: number
-  ttft_p95_s?: number
+  first_chunk_p50_s?: number
+  first_chunk_p95_s?: number
+  acknowledgement_p50_s?: number
+  acknowledgement_p95_s?: number
+  completion_p50_s?: number
+  completion_p95_s?: number
   // Shared dollar usage model (two-bar view) so /usage renders the same bars
   // as /subscription. Dollars only — never "credits".
   usage?: UsageModelData

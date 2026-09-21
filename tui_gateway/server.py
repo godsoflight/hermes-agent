@@ -1949,8 +1949,8 @@ def _get_usage(agent) -> dict:
         from agent.context_breakdown import context_usage_fields
         usage.update(context_usage_fields(comp))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
-    # Cache-hit ratio + rolling latency/tps (CLI status-bar parity). Omitted, not fabricated, when there is no
-    # data (Codex reports no latency; zero cache reads shows no hit% rather than an alarming 0).
+    # Cache-hit ratio + rolling latency/tps (CLI status-bar parity). Omit only
+    # when there is no denominator; zero reads with a real prompt is a measured 0%.
     with contextlib.suppress(Exception):
         # Mirrors the classic CLI bar (cli.py _get_status_bar_snapshot / PR #98250): hit =
         # session_cache_read_tokens / session_prompt_tokens (CanonicalUsage.prompt_tokens = input +
@@ -1958,14 +1958,15 @@ def _get_usage(agent) -> dict:
         # agent/conversation_loop.py.
         _prompt_total = int(getattr(agent, "session_prompt_tokens", 0) or 0)
         _cache_read = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
-        if _prompt_total > 0 and _cache_read > 0:
+        if _prompt_total > 0:
             usage["cache_hit_pct"] = max(0, min(100, round(_cache_read / _prompt_total * 100)))
     with contextlib.suppress(Exception):  # a status-bar readout must never break usage reporting
         _lhist = list(getattr(agent, "_api_latency_history", []) or [])
-        _ohist = list(getattr(agent, "_api_output_history", []) or [])
-        if _n := min(len(_lhist), len(_ohist)):
-            _total_lat = sum(_lhist[-_n:])
-            _avg_vel = (sum(_ohist[-_n:]) / _total_lat) if _total_lat > 0 else None
+        _throughput_hist = list(getattr(agent, "_api_throughput_history", []) or [])
+        if _throughput_hist:
+            _total_lat = sum(float(latency) for latency, _tokens in _throughput_hist)
+            _avg_vel = (sum(int(tokens) for _latency, tokens in _throughput_hist) / _total_lat) if _total_lat > 0 else None
+            _n = len(_throughput_hist)
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
@@ -1982,11 +1983,15 @@ def _get_usage(agent) -> dict:
 
         for _prefix, _history in (
             ("api_duration", _lhist),
-            ("ttft", list(getattr(agent, "_api_ttft_history", []) or [])),
+            ("first_chunk", list(getattr(agent, "_api_first_chunk_history", []) or [])),
+            ("acknowledgement", list(getattr(agent, "_acknowledgement_history", []) or [])),
+            ("completion", list(getattr(agent, "_completion_history", []) or [])),
         ):
             for _suffix, _fraction in (("p50_s", 0.50), ("p95_s", 0.95)):
                 if (_value := _percentile(_history, _fraction)) is not None:
-                    usage[f"{_prefix}_{_suffix}"] = round(_value, 1)
+                    # Acknowledgements should stay well below one second; tenths would
+                    # collapse healthy measurements to 0.0 and hide regressions.
+                    usage[f"{_prefix}_{_suffix}"] = round(_value, 3 if _prefix == "acknowledgement" else 1)
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count

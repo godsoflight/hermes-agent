@@ -5,7 +5,7 @@ with memory and ephemeral prompts.
 """
 
 import contextvars
-import hashlib
+
 import json
 import logging
 import os
@@ -22,8 +22,9 @@ from hermes_constants import (
 
 from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.skill_package import iter_skill_package_entries, skill_package_digest
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
+    EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
@@ -1117,7 +1118,7 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 3
+_SKILLS_SNAPSHOT_VERSION = 4
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1148,17 +1149,20 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
         manifest[ORG_MIRROR_DIR_NAME + "/" + ORG_ACTIVE_MARKER] = list(file_signature(st))
     except OSError:
         pass
-    for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
-        has_skill_md = "SKILL.md" in files
+    for root, dirs, files in os.walk(skills_dir_str, followlinks=False):
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             dirs[:] = [d for d in dirs if d == active_org]
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
-        for filename in ("SKILL.md", "DESCRIPTION.md"):
+        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+        for filename in files:
             path = os.path.join(root, filename)
             try:
-                if filename in files:
+                if filename == "SKILL.md":
+                    for package_path in iter_skill_package_entries(Path(root)):
+                        st = os.lstat(package_path)
+                        manifest[str(package_path)[prefix_len:]] = list(file_signature(st))
+                elif filename == "DESCRIPTION.md":
                     st = os.stat(path)
                     manifest[path[prefix_len:]] = list(file_signature(st))
             except OSError:
@@ -1191,9 +1195,10 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     platforms = [platforms] if isinstance(platforms, str) else platforms
     entry = {
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
+        "qualified_name": "/".join(parts[:-1]),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
-        "content_sha256": hashlib.sha256(skill_file.read_bytes()).hexdigest(),
+        "content_sha256": skill_package_digest(skill_file),
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1351,6 +1356,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
         name_owners.setdefault(_entry_name(entry), set()).add("org" if entry.get("org_id") else "personal")
     for entry in visible_entries:
         fm, desc, org_id = _entry_name(entry), entry.get("description", ""), entry.get("org_id")
+        display_name = fm
         if org_id:
             author = entry.get("org_author") or ""
             desc = f"[org-shared{': by ' + author if author else ''}] {desc}".strip()
@@ -1359,7 +1365,8 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
             desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load via category path] {desc}".strip()
         elif entry.get("personal_name_collision"):
             desc = f"[name collision — divergent personal copies; load via category path] {desc}".strip()
-        skills_by_category.setdefault(category, []).append((fm, desc))
+            display_name = entry.get("qualified_name") or fm
+        skills_by_category.setdefault(category, []).append((display_name, desc))
 
 
 def _render_skills_index(

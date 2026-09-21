@@ -52,19 +52,36 @@ def test_fields_are_omitted_when_absent(tmp_path, monkeypatch, caplog):
     assert "write=" not in line and "id=" not in line and "upstream=" not in line
 
 
-def test_usage_records_bounded_completed_duration_and_ttft_histories(tmp_path, monkeypatch, caplog):
+def test_usage_records_bounded_completed_duration_and_first_chunk_histories(tmp_path, monkeypatch, caplog):
     a = _agent(tmp_path, monkeypatch)
     try:
         resp = SimpleNamespace(usage=_usage(2, 3, 10), id=None, model=a.model)
         from agent import turn_usage
         turn_usage.record_response_usage(
             a, resp, messages=[{"role": "user", "content": "hi"}], api_call_count=1,
-            api_duration=2.5, api_ttft=0.4, compression_attempts=0, max_compression_attempts=3,
+            api_duration=2.5, api_first_chunk=0.4, compression_attempts=0, max_compression_attempts=3,
         )
         assert list(a._api_latency_history) == [2.5]
-        assert list(a._api_ttft_history) == [0.4]
+        assert list(a._api_first_chunk_history) == [0.4]
+        assert list(a._api_throughput_history) == [(2.5, 7)]
         assert a._api_latency_history.maxlen == 10
-        assert a._api_ttft_history.maxlen == 10
+        assert a._api_first_chunk_history.maxlen == 10
+    finally:
+        a.close()
+
+
+def test_usage_less_response_still_records_completed_timing(tmp_path, monkeypatch, caplog):
+    a = _agent(tmp_path, monkeypatch)
+    try:
+        from agent import turn_usage
+        turn_usage.record_response_usage(
+            a, SimpleNamespace(usage=None), messages=[{"role": "user", "content": "hi"}],
+            api_call_count=1, api_duration=7.5, api_first_chunk=1.2,
+            compression_attempts=0, max_compression_attempts=3,
+        )
+        assert list(a._api_latency_history) == [7.5]
+        assert list(a._api_first_chunk_history) == [1.2]
+        assert list(a._api_throughput_history) == []
     finally:
         a.close()
 

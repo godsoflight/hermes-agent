@@ -196,7 +196,7 @@ def check_api_response(
         agent, response, messages=messages, api_call_count=api_call_count,
         api_duration=api_duration, compression_attempts=compression_attempts,
         max_compression_attempts=max_compression_attempts,
-        api_ttft=(
+        api_first_chunk=(
             float(agent._last_api_first_event_monotonic) - float(api_start_monotonic)
             if getattr(agent, "_last_api_first_event_monotonic", None) is not None else None
         ),

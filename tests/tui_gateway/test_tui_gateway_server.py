@@ -674,6 +674,10 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
         session_api_calls = 1
         context_compressor = None
 
+        def __init__(self):
+            self._acknowledgement_history = []
+            self._completion_history = []
+
         def clear_interrupt(self):
             return None
 
@@ -704,14 +708,18 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
         events = []
         monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.append((event, sid, payload)))
         monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": False}})
+        agent = _Agent()
         server._sessions["sid"] = _session(
-            agent=_Agent(), model_override={"model": "gold-model", "provider": "gold-provider"}
+            agent=agent, model_override={"model": "gold-model", "provider": "gold-provider"}
         )
         try:
             response = server.handle_request(
                 {"id": "turn-1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
             )
             assert response["result"]["status"] == "streaming"
+            assert len(agent._acknowledgement_history) == 1
+            assert len(agent._completion_history) == 1
+            assert 0 <= agent._acknowledgement_history[0] <= agent._completion_history[0]
             return events
         finally:
             server._sessions.pop("sid", None)
@@ -20296,7 +20304,7 @@ class _BareAgent:
 
 
 def test_get_usage_perf_readouts_present():
-    """Usage exposes raw cache buckets and rolling latency/TTFT percentiles."""
+    """Usage exposes raw cache buckets and truthful rolling span percentiles."""
     from collections import deque
 
     class _PerfAgent:
@@ -20305,7 +20313,10 @@ def test_get_usage_perf_readouts_present():
         session_cache_read_tokens = 24_369
         session_cache_write_tokens = 3_504
         _api_latency_history = deque([1.0, 2.0, 3.0, 20.0], maxlen=10)
-        _api_ttft_history = deque([0.1, 0.2, 0.3, 1.0], maxlen=10)
+        _api_first_chunk_history = deque([0.1, 0.2, 0.3, 1.0], maxlen=10)
+        _api_throughput_history = deque([(1.0, 50), (2.0, 50), (3.0, 50), (20.0, 50)], maxlen=10)
+        _acknowledgement_history = deque([0.01, 0.02, 0.03, 0.10], maxlen=10)
+        _completion_history = deque([2.0, 4.0, 8.0, 20.0], maxlen=10)
         _api_output_history = deque([50, 50, 50, 50], maxlen=10)
 
     usage = server._get_usage(_PerfAgent())
@@ -20316,12 +20327,16 @@ def test_get_usage_perf_readouts_present():
     assert usage["avg_tps"] == 7.7  # true throughput sum(out)/sum(lat), not mean of ratios
     assert usage["api_duration_p50_s"] == 2.5
     assert usage["api_duration_p95_s"] == 17.4
-    assert usage["ttft_p50_s"] == 0.2
-    assert usage["ttft_p95_s"] == 0.9
+    assert usage["first_chunk_p50_s"] == 0.2
+    assert usage["first_chunk_p95_s"] == 0.9
+    assert usage["acknowledgement_p50_s"] == 0.025
+    assert usage["acknowledgement_p95_s"] == 0.089
+    assert usage["completion_p50_s"] == 6.0
+    assert usage["completion_p95_s"] == 18.2
 
 
-def test_get_usage_perf_readouts_omitted_without_data():
-    """Zero cache reads / empty history omit the keys — never fabricate 0s."""
+def test_get_usage_perf_readouts_represent_known_zero_cache_hits():
+    """A measured zero hit rate is data, not a missing field."""
 
     class _ColdAgent:
         model = "x"
@@ -20329,15 +20344,15 @@ def test_get_usage_perf_readouts_omitted_without_data():
         session_cache_read_tokens = 0
 
     usage = server._get_usage(_ColdAgent())
-    assert "cache_hit_pct" not in usage
+    assert usage["cache_hit_pct"] == 0
     assert usage["cache_read"] == 0
     assert usage["cache_write"] == 0
     assert "avg_latency_s" not in usage
     assert "avg_tps" not in usage
     assert "api_duration_p50_s" not in usage
     assert "api_duration_p95_s" not in usage
-    assert "ttft_p50_s" not in usage
-    assert "ttft_p95_s" not in usage
+    assert "first_chunk_p50_s" not in usage
+    assert "first_chunk_p95_s" not in usage
 
 
 def test_get_usage_perf_readouts_guard_negative_latency():

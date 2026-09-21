@@ -38,8 +38,12 @@ class Usage(OpenModel):
     avg_tps: float | None = None
     api_duration_p50_s: float | None = None
     api_duration_p95_s: float | None = None
-    ttft_p50_s: float | None = None
-    ttft_p95_s: float | None = None
+    first_chunk_p50_s: float | None = None
+    first_chunk_p95_s: float | None = None
+    acknowledgement_p50_s: float | None = None
+    acknowledgement_p95_s: float | None = None
+    completion_p50_s: float | None = None
+    completion_p95_s: float | None = None
     active_subagents: int | None = None
     dev_credits_spent_micros: int | None = None
     cost_usd: float | None = None

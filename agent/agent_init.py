@@ -2206,8 +2206,13 @@ _USAGE_STATE: Dict[str, Any] = {
     "session_cost_source": "none",
     # Local rolling performance histories (last 10 completed main-model calls).
     "_api_latency_history": lambda: deque(maxlen=10),
-    "_api_ttft_history": lambda: deque(maxlen=10),
-    "_api_output_history": lambda: deque(maxlen=10),
+    "_api_first_chunk_history": lambda: deque(maxlen=10),
+    # Paired samples only: usage-less responses belong in latency percentiles,
+    # but cannot be matched to an output-token count for throughput averages.
+    "_api_throughput_history": lambda: deque(maxlen=10),
+    # End-to-end Desktop/TUI spans: submit RPC -> accepted turn, and submit RPC -> terminal frame.
+    "_acknowledgement_history": lambda: deque(maxlen=10),
+    "_completion_history": lambda: deque(maxlen=10),
 }
 
 # Constructor params stored verbatim under the same name.

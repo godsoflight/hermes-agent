@@ -440,12 +440,22 @@ async def test_processing_receipt_follows_durable_marker_and_uses_intake_adapter
         mark_turn_active=AsyncMock(side_effect=lambda key: order.append("marker") or "token-1"),
     ))
     runner._intake_adapter_for = MagicMock(return_value=adapter)
-    event = SimpleNamespace()
+    event = SimpleNamespace(_gateway_delivery_managed=True)
     source = _make_source()
 
     assert await runner._begin_durable_turn_processing(cast(Any, event), source, "session-key") is True
     assert order == ["marker", "receipt"]
     runner._intake_adapter_for.assert_called_once_with(source)
+    assert callable(event._gateway_durable_turn_completion)
+
+    # Delivery owns marker cleanup: completing the model call is not enough to
+    # prove the response reached the platform adapter.
+    clear_active = AsyncMock(return_value=True)
+    store = runner._async_session_store
+    setattr(store, "clear_turn_active", clear_active)
+    await cast(Any, event._gateway_durable_turn_completion)()
+    clear_active.assert_awaited_once_with("session-key", "token-1")
+    assert not hasattr(event, "_gateway_durable_turn_completion")
 
 
 @pytest.mark.asyncio

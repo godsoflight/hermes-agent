@@ -382,7 +382,8 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
 
-        assert result.count("    - colliding-skill:") == 2
+        assert "    - alpha/alpha-directory:" in result
+        assert "    - beta/beta-directory:" in result
         assert result.count("name collision") == 2
         assert "ALPHA" in result and "BETA" in result
 

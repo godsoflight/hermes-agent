@@ -3340,6 +3340,10 @@ class BasePlatformAdapter(ABC):
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
     _processing_start_deferred_to_runner: bool = False
+    # Webhook uses the completion hook for mandatory session cleanup even when
+    # an event exits before durable runner admission. Receipt-only adapters keep
+    # this false so they never emit a terminal receipt without a start receipt.
+    _processing_completion_without_start: bool = False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
@@ -4334,6 +4338,13 @@ class BasePlatformAdapter(ABC):
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
 
+        def _completion_hook_admitted() -> bool:
+            return (
+                not getattr(self, "_processing_start_deferred_to_runner", False)
+                or bool(getattr(event, "_gateway_processing_started", False))
+                or getattr(self, "_processing_completion_without_start", False)
+            )
+
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
             if result is not None:
@@ -4347,6 +4358,7 @@ class BasePlatformAdapter(ABC):
         try:
             if not getattr(self, "_processing_start_deferred_to_runner", False):
                 await self._run_processing_hook("on_processing_start", event)
+            event._gateway_delivery_managed = True
             response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
@@ -4399,9 +4411,10 @@ class BasePlatformAdapter(ABC):
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
-            await self._run_processing_hook(
-                "on_processing_complete", event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            if _completion_hook_admitted():
+                await self._run_processing_hook(
+                    "on_processing_complete", event,
+                    ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
@@ -4414,12 +4427,14 @@ class BasePlatformAdapter(ABC):
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
-            await self._run_processing_hook(
-                "on_processing_complete", event,
-                ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
+            if _completion_hook_admitted():
+                await self._run_processing_hook(
+                    "on_processing_complete", event,
+                    ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
             raise
         except BaseException as e:
-            await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            if _completion_hook_admitted():
+                await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
@@ -4429,6 +4444,14 @@ class BasePlatformAdapter(ABC):
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+            _durable_completion = getattr(event, "_gateway_durable_turn_completion", None)
+            if callable(_durable_completion):
+                try:
+                    _completion_result = _durable_completion()
+                    if inspect.isawaitable(_completion_result):
+                        await _completion_result
+                except Exception:
+                    logger.warning("[%s] Durable turn cleanup failed after delivery", self.name, exc_info=True)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
