@@ -21,7 +21,10 @@ def isolated_kanban_home_with_profiles(monkeypatch):
     for prof in ("alpha", "beta", "default"):
         os.makedirs(os.path.join(test_home, "profiles", prof), exist_ok=True)
         with open(os.path.join(test_home, "profiles", prof, "config.yaml"), "w") as fh:
-            fh.write("{}\n")  # identity marker: a bare dir is not a profile
+            fh.write(
+                "model:\n  provider: custom\n  default: local-test\n"
+                "  base_url: http://127.0.0.1:9999/v1\n"
+            )  # identity marker plus an auth-free local runtime
     monkeypatch.setenv("HERMES_HOME", test_home)
     for mod in list(sys.modules.keys()):
         if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":

@@ -15,8 +15,13 @@ def all_assignees_spawnable(monkeypatch):
     those tasks into ``skipped_nonspawnable`` instead of spawning, which
     would break tests that assert spawn behavior.
     """
-    from hermes_cli import profiles
+    from hermes_cli import kanban_db_dispatch, profiles
     monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        kanban_db_dispatch,
+        "_check_task_capability",
+        lambda *_args, **_kwargs: type("Capability", (), {"ready": True, "reason": None})(),
+    )
 
 
 @pytest.fixture(autouse=True)

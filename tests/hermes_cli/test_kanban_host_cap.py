@@ -27,6 +27,11 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_connect as kbc
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_profiles_are_capable(all_assignees_spawnable):
+    """Host-cap tests use invented assignees; capability is tested separately."""
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""

@@ -34,6 +34,11 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_ops
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_profiles_are_capable(all_assignees_spawnable):
+    """This module uses invented review profile names; capability is out of scope."""
+
+
 @pytest.fixture
 def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolated HERMES_HOME with an empty kanban DB."""

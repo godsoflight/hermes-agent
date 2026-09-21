@@ -82,6 +82,24 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+def _check_task_capability(task, profile: str, *, extra_skills=()):
+    """Late-bound seam for profile capability preflight."""
+    from hermes_cli.kanban_dispatch_capability import check_profile_capabilities
+
+    return check_profile_capabilities(task, profile, extra_skills=extra_skills)
+
+
+def detect_liveness_stall(conn) -> list[str]:
+    """Return executable work when the board has no live/fresh running claim."""
+    if conn.execute("SELECT 1 FROM tasks WHERE status = 'running' LIMIT 1").fetchone():
+        return []
+    return [row["id"] for row in conn.execute(
+        "SELECT t.id FROM tasks t WHERE t.status IN ('ready', 'review') "
+        "AND t.assignee IS NOT NULL AND t.assignee != '' "
+        "ORDER BY t.priority DESC, t.created_at ASC"
+    )]
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass.
@@ -127,6 +145,14 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    capability_blocked: list[str] = field(default_factory=list)
+    """Task ids blocked before claim because the assigned profile could not
+    resolve a required skill or inference runtime."""
+    capability_rerouted: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, original_profile, fallback_profile)`` routes authorized by
+    ``kanban.capability_fallback_profiles`` before claim."""
+    liveness_stalled: list[str] = field(default_factory=list)
+    """Executable ready/review task ids left with no live/fresh running claim."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -2027,6 +2053,65 @@ def _dispatch_lane_task(
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
+    # Capability checks belong at the final reversible boundary: after the
+    # ordinary spawn guards, before claim/workspace creation.  In particular,
+    # never burn retries by starting a worker that cannot load its forced
+    # skills or resolve an inference runtime in the assigned profile.
+    from hermes_cli.kanban_dispatch_capability import authorized_fallback_profile
+
+    preflight_task = _kb.get_task(conn, task_id)
+    if preflight_task is None:  # deleted between selection and dispatch
+        return False
+    extra_skills = ("sdlc-review",) if lane == "review" else ()
+    capability = _check_task_capability(preflight_task, assignee, extra_skills=extra_skills)
+    if not capability.ready:
+        fallback = authorized_fallback_profile(assignee)
+        already_rerouted = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'capability_fallback' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        fallback_allowed = (
+            fallback is not None
+            and not already_rerouted
+            and (profile_exists is None or profile_exists(fallback))
+        )
+        fallback_check = None
+        if fallback is not None and fallback_allowed:
+            fallback_check = _check_task_capability(
+                preflight_task, fallback, extra_skills=extra_skills)
+        if fallback_check is None or not fallback_check.ready:
+            reason = capability.reason
+            if fallback_check is not None and fallback_check.reason:
+                reason = f"{reason} Authorized fallback '{fallback}' is also unavailable: {fallback_check.reason}"
+            result.capability_blocked.append(task_id)
+            if not dry_run:
+                _kb.block_task(conn, task_id, reason=reason, kind="capability")
+            return False
+
+        original_assignee = assignee
+        assert fallback is not None  # narrowed by the successful fallback check above
+        if per_profile_cap is not None:
+            current = per_profile_running.get(fallback, 0)
+            if current >= per_profile_cap:
+                result.skipped_per_profile_capped.append((task_id, fallback, current))
+                return False
+        if not dry_run:
+            with _kb.write_txn(conn):
+                changed = conn.execute(
+                    "UPDATE tasks SET assignee = ? WHERE id = ? AND assignee = ? "
+                    "AND status IN ('ready', 'review')",
+                    (fallback, task_id, original_assignee),
+                ).rowcount
+                if changed != 1:
+                    return False
+                _kb._append_event(conn, task_id, "capability_fallback", {
+                    "from_profile": original_assignee,
+                    "to_profile": fallback,
+                    "reason": "required_capability_unavailable",
+                })
+        assignee = fallback
+        result.capability_rerouted.append((task_id, original_assignee, fallback))
+
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
@@ -2368,6 +2453,7 @@ def _dispatch_once_locked(
             continue
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
+    result.liveness_stalled = detect_liveness_stall(conn)
     return result
 
 

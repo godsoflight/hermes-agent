@@ -106,6 +106,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "capability_blocked": res.capability_blocked,
+            "capability_rerouted": [
+                {"task_id": tid, "from_profile": source, "to_profile": target}
+                for (tid, source, target) in res.capability_rerouted
+            ],
             "respawn_guarded": [
                 {"task_id": tid, "reason": reason}
                 for (tid, reason) in res.respawn_guarded
@@ -137,6 +142,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
             f"{', '.join(res.auto_assigned_default)}"
         )
+    if res.capability_blocked:
+        print(f"Blocked (profile capability unavailable): {', '.join(res.capability_blocked)}")
+    for tid, source, target in res.capability_rerouted:
+        print(f"Capability fallback: {tid}  {source} -> {target}")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:
