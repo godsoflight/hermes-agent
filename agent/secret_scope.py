@@ -161,12 +161,12 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = scope.get(name)
         if val is not None:
             return val
-        return default if _MULTIPLEX_ACTIVE else _environ_or(name, default)
-    if _MULTIPLEX_ACTIVE:
+        return default if serves_routed_profile() else _environ_or(name, default)
+    if serves_routed_profile():
         raise UnscopedSecretError(
             name,
             f"get_secret({name!r}) called with no profile secret scope active "
-            f"while multiplexing is on. This credential read must run inside a "
+            f"while a routed profile is active. This credential read must run inside a "
             f"set_secret_scope(...) block (the per-turn / per-adapter profile "
             f"scope). Reading os.environ here would risk leaking another "
             f"profile's value. See website/docs/developer-guide/multiplexing-gateway.md "

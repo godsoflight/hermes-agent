@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -69,16 +70,31 @@ def check_profile_capabilities(task, profile: str, *, extra_skills=()) -> Capabi
     try:
         with _profile_scope(profile):
             if skills:
-                from agent.skill_commands import build_preloaded_skills_prompt
+                from tools.skills_tool import skill_view
 
-                _prompt, _loaded, missing = build_preloaded_skills_prompt(skills, task_id=task.id)
-                if missing:
-                    names = ", ".join(missing)
-                    return CapabilityCheck(
-                        False,
-                        f"Profile '{profile}' is missing required skill(s): {names}. "
-                        f"Install or enable them for that profile, then unblock task {task.id}.",
-                    )
+                for skill in skills:
+                    payload = json.loads(skill_view(
+                        skill, task_id=task.id, preprocess=False,
+                        mutate_readiness=False,
+                    ))
+                    if not payload.get("success"):
+                        return CapabilityCheck(
+                            False,
+                            f"Profile '{profile}' is missing required skill(s): {skill}. "
+                            f"Install or enable them for that profile, then unblock task {task.id}.",
+                        )
+                    if payload.get("setup_needed"):
+                        missing = [
+                            *[f"env ${name}" for name in payload.get("missing_required_environment_variables") or []],
+                            *[f"credential file {name}" for name in payload.get("missing_credential_files") or []],
+                            *[f"command '{name}'" for name in payload.get("missing_required_commands") or []],
+                        ]
+                        detail = ", ".join(missing) or "required setup incomplete"
+                        return CapabilityCheck(
+                            False,
+                            f"Profile '{profile}' cannot use required skill '{skill}': {detail}. "
+                            f"Complete its setup for that profile, then unblock task {task.id}.",
+                        )
 
             from hermes_cli.auth import has_usable_secret
             from hermes_cli.runtime_provider import resolve_runtime_provider

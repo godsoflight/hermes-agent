@@ -417,7 +417,9 @@ def _org_provenance_header(skill_dir: Path, active_skills_dir: Path):
     return {"org_id": prov_org, "shared_by": author or None, "as_of": ts or None}, header
 
 
-def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict, dict]:
+def _skill_readiness(
+    frontmatter: Dict[str, Any], skill_name: str, *, mutate: bool = True,
+) -> Tuple[dict, dict]:
     """Resolve required env vars / credential files (prompting for secrets where the surface
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
     before ``_source_path`` in the skill_view result, extras after — key order is tool output."""
@@ -428,8 +430,15 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     missing_required_env_vars = [
         e for e in required_env_vars
         if not e.get("optional") and not _is_env_var_persisted(e["name"], env_snapshot)]
-    capture_result = _capture_required_environment_variables(skill_name, missing_required_env_vars)
-    if missing_required_env_vars:  # re-read: a successful capture persisted into .env
+    capture_result = (
+        _capture_required_environment_variables(skill_name, missing_required_env_vars)
+        if mutate else {
+            "missing_names": [entry["name"] for entry in missing_required_env_vars],
+            "setup_skipped": False,
+            "gateway_setup_hint": None,
+        }
+    )
+    if mutate and missing_required_env_vars:  # re-read: a successful capture persisted into .env
         env_snapshot = load_env()
     still_missing = set(capture_result["missing_names"])
     remaining = [
@@ -437,7 +446,7 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
         and (e["name"] in still_missing or not _is_env_var_persisted(e["name"], env_snapshot))]
     setup_needed = bool(remaining)
     # Only vars actually set pass through to sandboxed execution (execute_code, terminal).
-    if available_env_names := [e["name"] for e in required_env_vars if e["name"] not in remaining]:
+    if mutate and (available_env_names := [e["name"] for e in required_env_vars if e["name"] not in remaining]):
         try:
             from tools.env_passthrough import register_env_passthrough
             register_env_passthrough(available_env_names)
@@ -448,12 +457,28 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     required_cred_files_raw = frontmatter.get("required_credential_files", [])
     missing_cred_files: list = []
     if isinstance(required_cred_files_raw, list) and required_cred_files_raw:
-        try:
-            from tools.credential_files import register_credential_files
-            missing_cred_files = register_credential_files(required_cred_files_raw)
-            setup_needed = setup_needed or bool(missing_cred_files)
-        except Exception:
-            logger.debug("Could not register credential files for skill %s", skill_name, exc_info=True)
+        if mutate:
+            try:
+                from tools.credential_files import register_credential_files
+                missing_cred_files = register_credential_files(required_cred_files_raw)
+            except Exception:
+                logger.debug("Could not register credential files for skill %s", skill_name, exc_info=True)
+        else:
+            from hermes_constants import get_hermes_home
+
+            home = Path(get_hermes_home()).resolve()
+            for entry in required_cred_files_raw:
+                raw_path = entry.get("path") or entry.get("name") or "" if isinstance(entry, dict) else entry
+                rel_path = raw_path.strip() if isinstance(raw_path, str) else ""
+                try:
+                    candidate = (home / rel_path).resolve()
+                    available = bool(rel_path) and not Path(rel_path).is_absolute() \
+                        and candidate.is_relative_to(home) and candidate.is_file()
+                except (OSError, ValueError):
+                    available = False
+                if rel_path and not available:
+                    missing_cred_files.append(rel_path)
+        setup_needed = setup_needed or bool(missing_cred_files)
     status = SkillReadinessStatus.SETUP_NEEDED if setup_needed else SkillReadinessStatus.AVAILABLE
     fields = {
         "required_environment_variables": required_env_vars, "required_commands": [],
@@ -583,7 +608,9 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str:
+    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True,
+    *, mutate_readiness: bool = True,
+) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
@@ -633,7 +660,8 @@ def skill_view(
         except ValueError:  # external skill — relative to its own parent dir
             rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
         skill_name = frontmatter.get("name", skill_md.stem if not skill_dir else skill_dir.name)
-        readiness, readiness_extras = _skill_readiness(frontmatter, skill_name)
+        readiness, readiness_extras = _skill_readiness(
+            frontmatter, skill_name, mutate=mutate_readiness)
         rendered_content = content if not preprocess else _preprocess_skill(
             content, skill_dir, task_id, "Could not preprocess skill content for %s", skill_name)
         org_provenance, header = None, ""

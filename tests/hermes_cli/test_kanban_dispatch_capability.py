@@ -173,6 +173,70 @@ def test_capability_scope_does_not_leak_across_profiles(
     assert check_profile_capabilities(task, "default").ready is False
 
 
+def test_named_profile_does_not_borrow_launch_process_secret(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = kanban_home / "profiles" / "worker"
+    worker.mkdir(parents=True)
+    (worker / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n  default: openrouter/auto\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "launch-profile-secret")
+    task = kb.Task(
+        id="secret-scope-probe", title="scope", body=None, assignee="worker", status="ready",
+        priority=0, created_by=None, created_at=0, started_at=None, completed_at=None,
+        workspace_kind="scratch", workspace_path=None, claim_lock=None, claim_expires=None,
+        tenant=None,
+    )
+
+    result = check_profile_capabilities(task, "worker")
+
+    assert result.ready is False
+    assert "credential" in (result.reason or "").lower()
+
+
+def test_skill_readiness_preflight_is_noninteractive_and_blocks_missing_setup(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = kanban_home / "profiles" / "worker"
+    worker.mkdir(parents=True)
+    (worker / "config.yaml").write_text(
+        "model:\n  provider: custom\n  default: local-test\n"
+        "  base_url: http://127.0.0.1:9999/v1\n",
+        encoding="utf-8",
+    )
+    skill_dir = worker / "skills" / "needs-setup"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: needs-setup\ndescription: setup probe\n"
+        "required_environment_variables:\n  - PROFILE_ONLY_KEY\n---\n\n# Probe\n",
+        encoding="utf-8",
+    )
+    prompted = []
+    from tools import skills_tool
+
+    monkeypatch.setattr(
+        skills_tool,
+        "_secret_capture_callback",
+        lambda *args: prompted.append(args) or {"cancelled": True},
+    )
+    task = kb.Task(
+        id="skill-readiness-probe", title="scope", body=None, assignee="worker", status="ready",
+        priority=0, created_by=None, created_at=0, started_at=None, completed_at=None,
+        workspace_kind="scratch", workspace_path=None, claim_lock=None, claim_expires=None,
+        tenant=None, skills=["needs-setup"],
+    )
+
+    result = check_profile_capabilities(task, "worker")
+
+    assert result.ready is False
+    assert "profile_only_key" in (result.reason or "").lower()
+    assert prompted == []
+
+
 def test_existing_fallback_provenance_prevents_a_second_route(
     kanban_home: Path,
 ) -> None:

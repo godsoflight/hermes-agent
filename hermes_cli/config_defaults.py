@@ -1877,6 +1877,9 @@ DEFAULT_CONFIG = {
         # root profile named "default", so on a shared kanban.db every home can otherwise claim
         # default-assigned cards.
         "dispatch_profiles": None,
+        # Explicit one-hop fallback used only when an assigned profile cannot satisfy a task's
+        # skill/provider preflight. Mapping is source profile -> fallback profile; {} disables.
+        "capability_fallback_profiles": {},
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,

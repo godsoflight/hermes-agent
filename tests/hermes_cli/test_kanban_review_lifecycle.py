@@ -622,6 +622,7 @@ def test_dispatch_json_exposes_suppression_reasons(
             rate_limited=["quota-task"],
             skipped_locked=True,
             memory_pressure="elevated",
+            liveness_stalled=["stalled-task"],
         ),
     )
 
@@ -634,6 +635,7 @@ def test_dispatch_json_exposes_suppression_reasons(
     assert payload["rate_limited"] == ["quota-task"]
     assert payload["skipped_locked"] is True
     assert payload["memory_pressure"] == "elevated"
+    assert payload["liveness_stalled"] == ["stalled-task"]
 
 
 def test_dispatch_text_and_daemon_stuck_warning_name_guard_reason(

@@ -118,6 +118,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "rate_limited": res.rate_limited,
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
+            "liveness_stalled": res.liveness_stalled,
         }, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -163,6 +164,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print("Skipped: another dispatcher holds this board's lock (no writes this tick)")
     if res.memory_pressure:
         print(f"Memory pressure {res.memory_pressure}: new workers restricted this tick")
+    if res.liveness_stalled:
+        print(f"Liveness stalled: {', '.join(res.liveness_stalled)}")
     return 0
 
 
